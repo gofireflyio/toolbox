@@ -27,7 +27,7 @@ The Firefly Toolkit is a curated set of scripts and utilities that help streamli
 
 ### AWS EventBridge Rule cleanup
 
-This Bash script allows you to easily to cleanup AWS EventBridge rules created by Firefly across all enabled regions in a given AWS account.
+This Bash script allows you to easily cleanup AWS EventBridge rules created by Firefly across all enabled regions in a given AWS account.
 
 #### Prerequisites
 
