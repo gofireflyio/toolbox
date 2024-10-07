@@ -63,8 +63,8 @@ This Bash script allows you to easily to cleanup AWS EventBridge rules created b
 - Deletes all eventBridge rules that match the prefix defined in : DEFAULT_PREFIX="firefly-" in all active regions
 
 #### Error Handling
-
-If changed the default names of the EventBridge rules. Please validate that they all have the same prefix and you change it in DEFAULT_PREFIX . 
+ 
+If the default names of the EventBridge rules were changed, please validate that they all have the same prefix and you change it in DEFAULT_PREFIX .
 
 ## Contributing
 
