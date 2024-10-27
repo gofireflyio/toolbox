@@ -1,10 +1,10 @@
 # AWS Firefly Resources Cleanup
 
-This repository contains AWS CloudFormation templates and Lambda functions for cleaning up Firefly-related AWS resources across all regions in your AWS account.
+This repository contains an AWS CloudFormation template for deploying a Lambda function that cleans up Firefly-related AWS resources across all regions in your AWS account.
 
 ## Overview
 
-The cleanup process handles the following resources:
+The cleanup process automatically removes the following resources:
 - EventBridge (CloudWatch Events) rules with prefix `firefly-events-*` across all enabled regions
 - IAM role named `invoke-firefly-remote-event-bus`
 - IAM policies with prefix `firefly-readonly-InvokeFireflyEventBusPolicy`
@@ -12,18 +12,22 @@ The cleanup process handles the following resources:
 ## Prerequisites
 
 - AWS CLI installed and configured
-- Appropriate AWS permissions to create Lambda functions and IAM roles
+- Appropriate AWS permissions to create/manage:
+  - CloudFormation stacks
+  - Lambda functions
+  - IAM roles and policies
+  - EventBridge rules
+  - CloudWatch Logs
 
 ## Repository Structure
 
 ```
 .
 ├── README.md
-└── cloudformation/
-    └── cleanup-lambda.yaml    # CloudFormation template for Lambda deployment
+└── template.yaml    # CloudFormation template for the cleanup solution
 ```
 
-## Deployment Instructions
+## Deployment
 
 1. Clone this repository:
 ```bash
@@ -34,122 +38,119 @@ cd [repository-name]
 2. Deploy using AWS CloudFormation:
 ```bash
 aws cloudformation deploy \
-  --template-file cloudformation/cleanup-lambda.yaml \
-  --stack-name firefly-cleanup-lambda \
+  --template-file template.yaml \
+  --stack-name firefly-cleanup \
   --capabilities CAPABILITY_IAM
 ```
 
-3. Invoke the Lambda function:
-```bash
-aws lambda invoke \
-  --function-name $(aws cloudformation describe-stacks \
-    --stack-name firefly-cleanup-lambda \
-    --query 'Stacks[0].Outputs[?OutputKey==`LambdaArn`].OutputValue' \
-    --output text) \
-  response.json
-```
-
-4. Check the execution results:
-```bash
-cat response.json
-```
-
-## Cleanup Process
-
-The Lambda function performs the following actions:
-
-1. Discovers all enabled AWS regions
-2. For each region:
-   - Lists all EventBridge rules with prefix `firefly-events-*`
-   - Removes all targets from each rule
-   - Deletes the rules
-3. Removes IAM role:
-   - Detaches all policies from the role
-   - Deletes inline policies
-   - Deletes the role itself
-4. Removes IAM policies:
-   - Finds policies matching the prefix
-   - Detaches them from all entities (users, groups, roles)
-   - Deletes all non-default versions
-   - Deletes the policies
+The stack will automatically trigger the cleanup process during deployment. No additional invocation is needed.
 
 ## Implementation Details
 
-The Lambda function is implemented using:
-- Node.js 18.x runtime
-- AWS SDK v3 for JavaScript
-- 5-minute timeout
-- 256MB memory allocation
+### Lambda Function
 
-## CloudWatch Logs
+- Runtime: Node.js 18.x
+- Memory: 256MB
+- Timeout: 10 minutes
+- Uses AWS SDK v3 for JavaScript
+- Implements CloudFormation Custom Resource pattern
 
-The function logs all operations to CloudWatch Logs. You can find the logs in the CloudWatch Logs console under the log group:
+### Cleanup Process
+
+The Lambda function performs these operations in sequence:
+
+1. **Region Discovery**
+   - Identifies all enabled AWS regions in the account
+
+2. **EventBridge Rules Cleanup (per region)**
+   - Lists rules with prefix `firefly-events-*`
+   - Removes all targets from each rule
+   - Deletes the rules
+
+3. **IAM Role Cleanup**
+   - Detaches managed policies
+   - Removes inline policies
+   - Deletes the role `invoke-firefly-remote-event-bus`
+
+4. **IAM Policy Cleanup**
+   - Identifies policies matching the prefix
+   - Detaches from all entities (users, groups, roles)
+   - Removes policy versions
+   - Deletes the policies
+
+### CloudWatch Logs
+
+Logs are available in CloudWatch under:
 ```
 /aws/lambda/[stack-name]-CleanupLambda-[random-suffix]
 ```
 
-## Response Format
+### Response Format
 
-The Lambda function returns a JSON response with the following structure:
+The cleanup operation returns a summary in this format:
 ```json
 {
-  "statusCode": 200,
-  "body": {
-    "totalRulesDeleted": 42,
-    "rulesByRegion": {
-      "us-east-1": 10,
-      "eu-west-1": 15,
-      // ... other regions
-    }
+  "totalRulesDeleted": <number>,
+  "rulesByRegion": {
+    "region1": <number>,
+    "region2": <number>
   }
 }
 ```
 
-## Permissions
+## IAM Permissions
 
-The CloudFormation template creates a Lambda execution role with the following permissions:
-- EventBridge: ListRules, DeleteRule, ListTargetsByRule, RemoveTargets
-- EC2: DescribeRegions
-- IAM: Various permissions for role and policy management
-- CloudWatch Logs: Create log group, Create log stream, Put log events
+The Lambda function's execution role includes permissions for:
+- EventBridge operations (ListRules, DeleteRule, etc.)
+- EC2 DescribeRegions
+- IAM role and policy management
+- CloudWatch Logs
 
 ## Error Handling
 
-- The script continues execution even if individual deletions fail
-- All errors are logged to CloudWatch Logs
-- The script handles cases where resources might not exist
-- Failed deletions don't prevent other resources from being processed
+The implementation includes robust error handling:
+- Continues execution if individual deletions fail
+- Handles non-existent resources gracefully
+- Logs all operations and errors
+- Returns appropriate responses to CloudFormation
 
-## Cleanup
+## Stack Cleanup
 
 To remove all deployed resources:
 ```bash
-aws cloudformation delete-stack --stack-name firefly-cleanup-lambda
-aws cloudformation wait stack-delete-complete --stack-name firefly-cleanup-lambda
+aws cloudformation delete-stack --stack-name firefly-cleanup
+aws cloudformation wait stack-delete-complete --stack-name firefly-cleanup
 ```
-
-## Security Considerations
-
-- The Lambda function requires broad permissions to clean up resources across regions
-- Consider implementing additional safeguards based on your security requirements
-- Review the IAM permissions before deployment
-- All actions are logged to CloudWatch Logs for audit purposes
 
 ## Troubleshooting
 
-1. **Lambda Timeout**
+### Common Issues
+
+1. **Stack Creation Failed**
+   - Check CloudWatch Logs for detailed error messages
+   - Verify IAM permissions
+   - Ensure all required resources are accessible
+
+2. **Cleanup Incomplete**
+   - Review CloudWatch Logs for specific failures
+   - Check for permission issues
+   - Verify resource existence and accessibility
+
+3. **Timeout Issues**
    - Default timeout is 10 minutes
-   - If cleanup takes longer, modify the `Timeout` property in the CloudFormation template
+   - For large deployments, consider increasing the Lambda timeout in the template
 
-2. **Permission Issues**
-   - Check CloudWatch Logs for specific permission errors
-   - Review the IAM role permissions in the CloudFormation template
-   - Ensure your AWS account has access to all regions being cleaned
+### Getting Help
 
-3. **Resource Not Found**
-   - The script handles "not found" errors gracefully
-   - Check CloudWatch Logs for details about specific resources
+1. Check CloudWatch Logs for detailed error messages
+2. Review the CloudFormation stack events
+3. Verify AWS CLI configuration and permissions
 
-4. **Partial Failures**
-   - The script continues even if some deletions fail
-   - Check CloudWatch Logs for complete details about any failures
+## Security Considerations
+
+- The Lambda function requires permissions across multiple AWS services
+- All actions are logged for audit purposes
+- Consider implementing additional safeguards:
+  - Resource tagging
+  - Additional prefix restrictions
+  - Regional restrictions
