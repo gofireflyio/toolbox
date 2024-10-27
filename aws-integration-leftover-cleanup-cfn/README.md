@@ -43,7 +43,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM
 ```
 
-The stack will automatically trigger the cleanup process during deployment. No additional invocation is needed.
+**The stack will automatically trigger the cleanup process during deployment. No additional invocation is needed.**
 
 ## Implementation Details
 
@@ -73,7 +73,7 @@ The Lambda function performs these operations in sequence:
    - Deletes the role `invoke-firefly-remote-event-bus`
 
 4. **IAM Policy Cleanup**
-   - Identifies policies matching the prefix
+   - Identifies policies matching the IAM role `invoke-firefly-remote-event-bus`
    - Detaches from all entities (users, groups, roles)
    - Removes policy versions
    - Deletes the policies
