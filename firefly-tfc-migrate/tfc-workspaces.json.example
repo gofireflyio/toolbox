@@ -1,0 +1,39 @@
+{
+  "projects": [
+    {
+      "id": "prj-example1",
+      "name": "aws",
+      "description": "AWS-related workspaces"
+    },
+    {
+      "id": "prj-example2", 
+      "name": "Default Project",
+      "description": null
+    }
+  ],
+  "workspaces": [
+    {
+      "id": "ws-example1",
+      "name": "aws-instance",
+      "description": "AWS EC2 instance workspace",
+      "project_id": "prj-example1",
+      "project_name": "aws",
+      "vcs_repo_type": "github",
+      "repository": "username/aws-instance",
+      "default_branch": "main",
+      "working_directory": null,
+      "terraform_version": "1.5.7",
+      "tag_names": ["production", "aws"],
+      "variables": [
+        {
+          "key": "instance_type",
+          "value": "t3.micro",
+          "description": "EC2 instance type",
+          "category": "terraform",
+          "sensitive": false,
+          "hcl": false
+        }
+      ]
+    }
+  ]
+}
