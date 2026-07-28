@@ -44,7 +44,7 @@ while getopts "s:m:h" opt; do
   case $opt in
     s) SUBS+=("$OPTARG") ;;
     m) MG="$OPTARG" ;;
-    h) grep '^#' "$0" | head -35; exit 0 ;;
+    h) awk '/^#/{print; next} {exit}' "$0"; exit 0 ;;
     *) exit 1 ;;
   esac
 done

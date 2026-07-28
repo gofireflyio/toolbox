@@ -42,7 +42,7 @@ while getopts "p:o:f:h" opt; do
     p) SCOPE="projects/$OPTARG" ;;
     o) SCOPE="organizations/$OPTARG" ;;
     f) SCOPE="folders/$OPTARG" ;;
-    h) grep '^#' "$0" | head -35; exit 0 ;;
+    h) awk '/^#/{print; next} {exit}' "$0"; exit 0 ;;
     *) exit 1 ;;
   esac
 done

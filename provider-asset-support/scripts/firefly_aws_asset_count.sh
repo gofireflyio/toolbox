@@ -45,7 +45,7 @@ while getopts "p:r:a:h" opt; do
     p) PROFILE_ARG=(--profile "$OPTARG") ;;
     r) REGIONS="$OPTARG" ;;
     a) AGGREGATOR="$OPTARG" ;;
-    h) grep '^#' "$0" | head -40; exit 0 ;;
+    h) awk '/^#/{print; next} {exit}' "$0"; exit 0 ;;
     *) exit 1 ;;
   esac
 done
