@@ -1,0 +1,56 @@
+name: Sync provider support lists
+
+# Keeps provider-asset-support/ in step with the Confluence source pages.
+# Runs on the 1st and 15th of each month (~every 2 weeks) and can be run
+# on demand. When the supported-type lists change, it opens/updates a PR.
+
+on:
+  schedule:
+    - cron: "0 8 1,15 * *"   # 08:00 UTC on the 1st and 15th
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Refresh supported-type lists from Confluence
+        env:
+          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+        run: python3 provider-asset-support/monitor/check_provider_pages.py
+
+      - name: Open or update PR if the lists changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TRACKED="provider-asset-support/supported-types provider-asset-support/monitor/providers.baseline.json"
+          if [ -z "$(git status --porcelain -- $TRACKED)" ]; then
+            echo "No changes to supported-type lists. Nothing to do."
+            exit 0
+          fi
+          BRANCH="chore/provider-support-sync"
+          git config user.name  "firefly-toolbox-bot"
+          git config user.email "toolbox-bot@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add $TRACKED
+          git commit -m "chore: sync supported provider resource types from Confluence"
+          git push -f origin "$BRANCH"
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "PR already open for $BRANCH; the force-push updated it."
+          else
+            gh pr create \
+              --base main --head "$BRANCH" \
+              --title "chore: sync supported provider resource types" \
+              --body-file provider-asset-support/monitor/report.md
+          fi

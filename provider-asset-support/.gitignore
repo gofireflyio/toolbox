@@ -1,0 +1,4 @@
+# Output written by the asset-count scripts when customers run them
+firefly_aws_asset_count_*.csv
+firefly_azure_asset_count_*.csv
+firefly_gcp_asset_count_*.csv
