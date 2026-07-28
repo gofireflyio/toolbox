@@ -59,8 +59,9 @@ The supported-type lists grow as Firefly increases coverage. A GitHub Action
 - **Every 2 weeks** (1st & 15th, 08:00 UTC — also runnable on demand from the Actions tab)
   it reads the three Confluence pages and rewrites `supported-types/*.txt` and
   `monitor/providers.baseline.json`.
-- If anything changed it **opens/updates a PR** whose description lists the added/removed
-  types and a checklist of manual follow-ups.
+- If anything changed it **opens/updates a PR** (assigned to `@glengol`) whose description
+  lists the added/removed types and a checklist of manual follow-ups. If nothing changed,
+  it does nothing — no PR.
 
 Two things the job intentionally does **not** auto-edit, because they need a human:
 
