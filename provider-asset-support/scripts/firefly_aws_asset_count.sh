@@ -30,19 +30,23 @@
 #    ./firefly_aws_asset_count.sh -p my-profile
 # =============================================================================
 
-set -uo pipefail
+set -o pipefail
+# Not using `set -u`: Bash < 4.4 (macOS ships 3.2) throws "unbound variable"
+# when an empty array is expanded with "${arr[@]}", which PROFILE_ARG hits
+# any time -p isn't passed. Every scalar var below has an explicit default.
 
 PROFILE_ARG=()
+PROFILE_NAME=""
 REGIONS=""
 AGGREGATOR=""
 OUT_CSV="firefly_aws_asset_count_$(date +%Y%m%d_%H%M%S).csv"
 
 while getopts "p:r:a:h" opt; do
   case $opt in
-    p) PROFILE_ARG=(--profile "$OPTARG") ;;
+    p) PROFILE_ARG=(--profile "$OPTARG"); PROFILE_NAME="$OPTARG" ;;
     r) REGIONS="$OPTARG" ;;
     a) AGGREGATOR="$OPTARG" ;;
-    h) grep '^#' "$0" | head -40; exit 0 ;;
+    h) awk '/^#/{print; next} {exit}' "$0"; exit 0 ;;
     *) exit 1 ;;
   esac
 done
@@ -50,132 +54,282 @@ done
 command -v aws >/dev/null || { echo "ERROR: aws CLI not found"; exit 1; }
 command -v jq  >/dev/null || { echo "ERROR: jq not found";      exit 1; }
 
+# Fail fast with a clear message if credentials are missing/expired, instead
+# of limping through to a misleading "TOTAL: 0" report (describe-regions and
+# every per-region Config query would otherwise fail silently too).
+ACCOUNT=$(aws sts get-caller-identity "${PROFILE_ARG[@]}" --query Account --output text 2>&1)
+if [[ $? -ne 0 || -z "$ACCOUNT" ]]; then
+  echo "ERROR: could not authenticate to AWS."
+  echo "$ACCOUNT"
+  if [[ -n "$PROFILE_NAME" ]]; then
+    echo "If you're using AWS SSO, try: aws sso login --profile $PROFILE_NAME"
+  else
+    echo "If you're using AWS SSO, try: aws sso login   (or aws configure to set up static credentials)"
+  fi
+  exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # AWS Config resourceType -> Firefly-supported Terraform resource type
 # (Only types recordable by AWS Config appear here; unmapped types found in
 #  the account are reported separately so nothing is hidden.)
 # -----------------------------------------------------------------------------
-declare -A MAP=(
-  ["AWS::ACM::Certificate"]="aws_acm_certificate"
-  ["AWS::ApiGateway::RestApi"]="aws_api_gateway_rest_api"
-  ["AWS::ApiGateway::Stage"]="aws_api_gateway_stage"
-  ["AWS::ApiGatewayV2::Api"]="aws_apigatewayv2_api"
-  ["AWS::ApiGatewayV2::Stage"]="aws_apigatewayv2_stage"
-  ["AWS::AppConfig::Application"]="aws_appconfig_application"
-  ["AWS::Athena::DataCatalog"]="aws_athena_data_catalog"
-  ["AWS::Athena::WorkGroup"]="aws_athena_workgroup"
-  ["AWS::AutoScaling::AutoScalingGroup"]="aws_autoscaling_group"
-  ["AWS::AutoScaling::LaunchConfiguration"]="aws_launch_configuration"
-  ["AWS::AutoScaling::ScalingPolicy"]="aws_autoscaling_policy"
-  ["AWS::Backup::BackupVault"]="aws_backup_vault"
-  ["AWS::CloudFront::Distribution"]="aws_cloudfront_distribution"
-  ["AWS::CloudFront::Function"]="aws_cloudfront_function"
-  ["AWS::CloudTrail::Trail"]="aws_cloudtrail"
-  ["AWS::CloudWatch::Alarm"]="aws_cloudwatch_metric_alarm"
-  ["AWS::CloudWatch::MetricStream"]="aws_cloudwatch_metric_stream"
-  ["AWS::Events::EventBus"]="aws_cloudwatch_event_bus"
-  ["AWS::Events::Rule"]="aws_cloudwatch_event_rule"
-  ["AWS::Logs::LogGroup"]="aws_cloudwatch_log_group"
-  ["AWS::CodeBuild::Project"]="aws_codebuild_project"
-  ["AWS::CodeBuild::ReportGroup"]="aws_codebuild_report_group"
-  ["AWS::CodeDeploy::Application"]="aws_codedeploy_app"
-  ["AWS::CodeDeploy::DeploymentConfig"]="aws_codedeploy_deployment_config"
-  ["AWS::CodeDeploy::DeploymentGroup"]="aws_codedeploy_deployment_group"
-  ["AWS::CodePipeline::Pipeline"]="aws_codepipeline"
-  ["AWS::Cognito::IdentityPool"]="aws_cognito_identity_pool"
-  ["AWS::Cognito::UserPool"]="aws_cognito_user_pool"
-  ["AWS::Cognito::UserPoolClient"]="aws_cognito_user_pool_client"
-  ["AWS::Cognito::UserPoolGroup"]="aws_cognito_user_group"
-  ["AWS::Config::ConfigurationRecorder"]="aws_config_configuration_recorder"
-  ["AWS::Connect::Instance"]="aws_connect_instance"
-  ["AWS::DMS::Endpoint"]="aws_dms_endpoint"
-  ["AWS::DMS::ReplicationInstance"]="aws_dms_replication_instance"
-  ["AWS::DynamoDB::Table"]="aws_dynamodb_table"
-  ["AWS::EC2::DHCPOptions"]="aws_vpc_dhcp_options"
-  ["AWS::EC2::EIP"]="aws_eip"
-  ["AWS::EC2::FlowLog"]="aws_flow_log"
-  ["AWS::EC2::Instance"]="aws_instance"
-  ["AWS::EC2::InternetGateway"]="aws_internet_gateway"
-  ["AWS::EC2::LaunchTemplate"]="aws_launch_template"
-  ["AWS::EC2::NatGateway"]="aws_nat_gateway"
-  ["AWS::EC2::NetworkAcl"]="aws_network_acl"
-  ["AWS::EC2::NetworkInterface"]="aws_network_interface"
-  ["AWS::EC2::RouteTable"]="aws_route_table"
-  ["AWS::EC2::SecurityGroup"]="aws_security_group"
-  ["AWS::EC2::Subnet"]="aws_subnet"
-  ["AWS::EC2::TrafficMirrorFilter"]="aws_ec2_traffic_mirror_filter"
-  ["AWS::EC2::TrafficMirrorSession"]="aws_ec2_traffic_mirror_session"
-  ["AWS::EC2::TrafficMirrorTarget"]="aws_ec2_traffic_mirror_target"
-  ["AWS::EC2::TransitGateway"]="aws_ec2_transit_gateway"
-  ["AWS::EC2::TransitGatewayAttachment"]="aws_ec2_transit_gateway_vpc_attachment"
-  ["AWS::EC2::TransitGatewayRouteTable"]="aws_ec2_transit_gateway_route_table"
-  ["AWS::EC2::Volume"]="aws_ebs_volume"
-  ["AWS::EC2::VPC"]="aws_vpc"
-  ["AWS::EC2::VPCEndpoint"]="aws_vpc_endpoint"
-  ["AWS::EC2::VPCEndpointService"]="aws_vpc_endpoint_service"
-  ["AWS::EC2::VPCPeeringConnection"]="aws_vpc_peering_connection"
-  ["AWS::EC2::VPNConnection"]="aws_vpn_connection"
-  ["AWS::EC2::VPNGateway"]="aws_vpn_gateway"
-  ["AWS::ECR::PublicRepository"]="aws_ecrpublic_repository"
-  ["AWS::ECR::Repository"]="aws_ecr_repository"
-  ["AWS::ECS::CapacityProvider"]="aws_ecs_capacity_provider"
-  ["AWS::ECS::Cluster"]="aws_ecs_cluster"
-  ["AWS::ECS::Service"]="aws_ecs_service"
-  ["AWS::ECS::TaskDefinition"]="aws_ecs_task_definition"
-  ["AWS::EFS::AccessPoint"]="aws_efs_access_point"
-  ["AWS::EFS::FileSystem"]="aws_efs_file_system"
-  ["AWS::EKS::Addon"]="aws_eks_addon"
-  ["AWS::EKS::Cluster"]="aws_eks_cluster"
-  ["AWS::EKS::FargateProfile"]="aws_eks_fargate_profile"
-  ["AWS::ElasticBeanstalk::Application"]="aws_elastic_beanstalk_application"
-  ["AWS::ElasticBeanstalk::Environment"]="aws_elastic_beanstalk_environment"
-  ["AWS::Elasticsearch::Domain"]="aws_elasticsearch_domain"
-  ["AWS::OpenSearch::Domain"]="aws_opensearch_domain"
-  ["AWS::ElasticLoadBalancing::LoadBalancer"]="aws_elb"
-  ["AWS::ElasticLoadBalancingV2::LoadBalancer"]="aws_lb"
-  ["AWS::ElasticLoadBalancingV2::Listener"]="aws_lb_listener"
-  ["AWS::GlobalAccelerator::Accelerator"]="aws_globalaccelerator_accelerator"
-  ["AWS::GlobalAccelerator::Listener"]="aws_globalaccelerator_listener"
-  ["AWS::Glue::Job"]="aws_glue_job"
-  ["AWS::GuardDuty::Detector"]="aws_guardduty_detector"
-  ["AWS::IAM::Group"]="aws_iam_group"
-  ["AWS::IAM::Policy"]="aws_iam_policy"
-  ["AWS::IAM::Role"]="aws_iam_role"
-  ["AWS::IAM::User"]="aws_iam_user"
-  ["AWS::KMS::Alias"]="aws_kms_alias"
-  ["AWS::KMS::Key"]="aws_kms_key"
-  ["AWS::Kinesis::Stream"]="aws_kinesis_stream"
-  ["AWS::Kinesis::StreamConsumer"]="aws_kinesis_stream_consumer"
-  ["AWS::KinesisFirehose::DeliveryStream"]="aws_kinesis_firehose_delivery_stream"
-  ["AWS::Lambda::CodeSigningConfig"]="aws_lambda_code_signing_config"
-  ["AWS::Lambda::Function"]="aws_lambda_function"
-  ["AWS::AmazonMQ::Broker"]="aws_mq_broker"
-  ["AWS::MSK::Cluster"]="aws_msk_cluster"
-  ["AWS::NetworkFirewall::Firewall"]="aws_networkfirewall_firewall"
-  ["AWS::RDS::DBCluster"]="aws_rds_cluster"
-  ["AWS::RDS::DBClusterSnapshot"]="aws_db_cluster_snapshot"
-  ["AWS::RDS::DBInstance"]="aws_db_instance"
-  ["AWS::RDS::DBSecurityGroup"]="aws_db_security_group"
-  ["AWS::RDS::DBSnapshot"]="aws_db_snapshot"
-  ["AWS::RDS::DBSubnetGroup"]="aws_db_subnet_group"
-  ["AWS::RDS::EventSubscription"]="aws_db_event_subscription"
-  ["AWS::Redshift::Cluster"]="aws_redshift_cluster"
-  ["AWS::Redshift::ClusterParameterGroup"]="aws_redshift_parameter_group"
-  ["AWS::Redshift::ClusterSubnetGroup"]="aws_redshift_subnet_group"
-  ["AWS::Route53::HostedZone"]="aws_route53_zone"
-  ["AWS::Route53Resolver::ResolverEndpoint"]="aws_route53_resolver_endpoint"
-  ["AWS::S3::Bucket"]="aws_s3_bucket"
-  ["AWS::SageMaker::Domain"]="aws_sagemaker_domain"
-  ["AWS::SageMaker::EndpointConfig"]="aws_sagemaker_endpoint_configuration"
-  ["AWS::SageMaker::Model"]="aws_sagemaker_model"
-  ["AWS::SageMaker::NotebookInstance"]="aws_sagemaker_notebook_instance"
-  ["AWS::SecretsManager::Secret"]="aws_secretsmanager_secret"
-  ["AWS::ServiceDiscovery::Service"]="aws_service_discovery_service"
-  ["AWS::StepFunctions::StateMachine"]="aws_sfn_state_machine"
-  ["AWS::SNS::Topic"]="aws_sns_topic"
-  ["AWS::SQS::Queue"]="aws_sqs_queue"
-  ["AWS::WAFv2::WebACL"]="aws_wafv2_web_acl"
+MAP_KEYS=(
+  "AWS::ACM::Certificate"
+  "AWS::ApiGateway::RestApi"
+  "AWS::ApiGateway::Stage"
+  "AWS::ApiGatewayV2::Api"
+  "AWS::ApiGatewayV2::Stage"
+  "AWS::AppConfig::Application"
+  "AWS::Athena::DataCatalog"
+  "AWS::Athena::WorkGroup"
+  "AWS::AutoScaling::AutoScalingGroup"
+  "AWS::AutoScaling::LaunchConfiguration"
+  "AWS::AutoScaling::ScalingPolicy"
+  "AWS::Backup::BackupVault"
+  "AWS::CloudFront::Distribution"
+  "AWS::CloudFront::Function"
+  "AWS::CloudTrail::Trail"
+  "AWS::CloudWatch::Alarm"
+  "AWS::CloudWatch::MetricStream"
+  "AWS::Events::EventBus"
+  "AWS::Events::Rule"
+  "AWS::Logs::LogGroup"
+  "AWS::CodeBuild::Project"
+  "AWS::CodeBuild::ReportGroup"
+  "AWS::CodeDeploy::Application"
+  "AWS::CodeDeploy::DeploymentConfig"
+  "AWS::CodeDeploy::DeploymentGroup"
+  "AWS::CodePipeline::Pipeline"
+  "AWS::Cognito::IdentityPool"
+  "AWS::Cognito::UserPool"
+  "AWS::Cognito::UserPoolClient"
+  "AWS::Cognito::UserPoolGroup"
+  "AWS::Config::ConfigurationRecorder"
+  "AWS::Connect::Instance"
+  "AWS::DMS::Endpoint"
+  "AWS::DMS::ReplicationInstance"
+  "AWS::DynamoDB::Table"
+  "AWS::EC2::DHCPOptions"
+  "AWS::EC2::EIP"
+  "AWS::EC2::FlowLog"
+  "AWS::EC2::Instance"
+  "AWS::EC2::InternetGateway"
+  "AWS::EC2::LaunchTemplate"
+  "AWS::EC2::NatGateway"
+  "AWS::EC2::NetworkAcl"
+  "AWS::EC2::NetworkInterface"
+  "AWS::EC2::RouteTable"
+  "AWS::EC2::SecurityGroup"
+  "AWS::EC2::Subnet"
+  "AWS::EC2::TrafficMirrorFilter"
+  "AWS::EC2::TrafficMirrorSession"
+  "AWS::EC2::TrafficMirrorTarget"
+  "AWS::EC2::TransitGateway"
+  "AWS::EC2::TransitGatewayAttachment"
+  "AWS::EC2::TransitGatewayRouteTable"
+  "AWS::EC2::Volume"
+  "AWS::EC2::VPC"
+  "AWS::EC2::VPCEndpoint"
+  "AWS::EC2::VPCEndpointService"
+  "AWS::EC2::VPCPeeringConnection"
+  "AWS::EC2::VPNConnection"
+  "AWS::EC2::VPNGateway"
+  "AWS::ECR::PublicRepository"
+  "AWS::ECR::Repository"
+  "AWS::ECS::CapacityProvider"
+  "AWS::ECS::Cluster"
+  "AWS::ECS::Service"
+  "AWS::ECS::TaskDefinition"
+  "AWS::EFS::AccessPoint"
+  "AWS::EFS::FileSystem"
+  "AWS::EKS::Addon"
+  "AWS::EKS::Cluster"
+  "AWS::EKS::FargateProfile"
+  "AWS::ElasticBeanstalk::Application"
+  "AWS::ElasticBeanstalk::Environment"
+  "AWS::Elasticsearch::Domain"
+  "AWS::OpenSearch::Domain"
+  "AWS::ElasticLoadBalancing::LoadBalancer"
+  "AWS::ElasticLoadBalancingV2::LoadBalancer"
+  "AWS::ElasticLoadBalancingV2::Listener"
+  "AWS::GlobalAccelerator::Accelerator"
+  "AWS::GlobalAccelerator::Listener"
+  "AWS::Glue::Job"
+  "AWS::GuardDuty::Detector"
+  "AWS::IAM::Group"
+  "AWS::IAM::Policy"
+  "AWS::IAM::Role"
+  "AWS::IAM::User"
+  "AWS::KMS::Alias"
+  "AWS::KMS::Key"
+  "AWS::Kinesis::Stream"
+  "AWS::Kinesis::StreamConsumer"
+  "AWS::KinesisFirehose::DeliveryStream"
+  "AWS::Lambda::CodeSigningConfig"
+  "AWS::Lambda::Function"
+  "AWS::AmazonMQ::Broker"
+  "AWS::MSK::Cluster"
+  "AWS::NetworkFirewall::Firewall"
+  "AWS::RDS::DBCluster"
+  "AWS::RDS::DBClusterSnapshot"
+  "AWS::RDS::DBInstance"
+  "AWS::RDS::DBSecurityGroup"
+  "AWS::RDS::DBSnapshot"
+  "AWS::RDS::DBSubnetGroup"
+  "AWS::RDS::EventSubscription"
+  "AWS::Redshift::Cluster"
+  "AWS::Redshift::ClusterParameterGroup"
+  "AWS::Redshift::ClusterSubnetGroup"
+  "AWS::Route53::HostedZone"
+  "AWS::Route53Resolver::ResolverEndpoint"
+  "AWS::S3::Bucket"
+  "AWS::SageMaker::Domain"
+  "AWS::SageMaker::EndpointConfig"
+  "AWS::SageMaker::Model"
+  "AWS::SageMaker::NotebookInstance"
+  "AWS::SecretsManager::Secret"
+  "AWS::ServiceDiscovery::Service"
+  "AWS::StepFunctions::StateMachine"
+  "AWS::SNS::Topic"
+  "AWS::SQS::Queue"
+  "AWS::WAFv2::WebACL"
 )
+
+MAP_VALS=(
+  "aws_acm_certificate"
+  "aws_api_gateway_rest_api"
+  "aws_api_gateway_stage"
+  "aws_apigatewayv2_api"
+  "aws_apigatewayv2_stage"
+  "aws_appconfig_application"
+  "aws_athena_data_catalog"
+  "aws_athena_workgroup"
+  "aws_autoscaling_group"
+  "aws_launch_configuration"
+  "aws_autoscaling_policy"
+  "aws_backup_vault"
+  "aws_cloudfront_distribution"
+  "aws_cloudfront_function"
+  "aws_cloudtrail"
+  "aws_cloudwatch_metric_alarm"
+  "aws_cloudwatch_metric_stream"
+  "aws_cloudwatch_event_bus"
+  "aws_cloudwatch_event_rule"
+  "aws_cloudwatch_log_group"
+  "aws_codebuild_project"
+  "aws_codebuild_report_group"
+  "aws_codedeploy_app"
+  "aws_codedeploy_deployment_config"
+  "aws_codedeploy_deployment_group"
+  "aws_codepipeline"
+  "aws_cognito_identity_pool"
+  "aws_cognito_user_pool"
+  "aws_cognito_user_pool_client"
+  "aws_cognito_user_group"
+  "aws_config_configuration_recorder"
+  "aws_connect_instance"
+  "aws_dms_endpoint"
+  "aws_dms_replication_instance"
+  "aws_dynamodb_table"
+  "aws_vpc_dhcp_options"
+  "aws_eip"
+  "aws_flow_log"
+  "aws_instance"
+  "aws_internet_gateway"
+  "aws_launch_template"
+  "aws_nat_gateway"
+  "aws_network_acl"
+  "aws_network_interface"
+  "aws_route_table"
+  "aws_security_group"
+  "aws_subnet"
+  "aws_ec2_traffic_mirror_filter"
+  "aws_ec2_traffic_mirror_session"
+  "aws_ec2_traffic_mirror_target"
+  "aws_ec2_transit_gateway"
+  "aws_ec2_transit_gateway_vpc_attachment"
+  "aws_ec2_transit_gateway_route_table"
+  "aws_ebs_volume"
+  "aws_vpc"
+  "aws_vpc_endpoint"
+  "aws_vpc_endpoint_service"
+  "aws_vpc_peering_connection"
+  "aws_vpn_connection"
+  "aws_vpn_gateway"
+  "aws_ecrpublic_repository"
+  "aws_ecr_repository"
+  "aws_ecs_capacity_provider"
+  "aws_ecs_cluster"
+  "aws_ecs_service"
+  "aws_ecs_task_definition"
+  "aws_efs_access_point"
+  "aws_efs_file_system"
+  "aws_eks_addon"
+  "aws_eks_cluster"
+  "aws_eks_fargate_profile"
+  "aws_elastic_beanstalk_application"
+  "aws_elastic_beanstalk_environment"
+  "aws_elasticsearch_domain"
+  "aws_opensearch_domain"
+  "aws_elb"
+  "aws_lb"
+  "aws_lb_listener"
+  "aws_globalaccelerator_accelerator"
+  "aws_globalaccelerator_listener"
+  "aws_glue_job"
+  "aws_guardduty_detector"
+  "aws_iam_group"
+  "aws_iam_policy"
+  "aws_iam_role"
+  "aws_iam_user"
+  "aws_kms_alias"
+  "aws_kms_key"
+  "aws_kinesis_stream"
+  "aws_kinesis_stream_consumer"
+  "aws_kinesis_firehose_delivery_stream"
+  "aws_lambda_code_signing_config"
+  "aws_lambda_function"
+  "aws_mq_broker"
+  "aws_msk_cluster"
+  "aws_networkfirewall_firewall"
+  "aws_rds_cluster"
+  "aws_db_cluster_snapshot"
+  "aws_db_instance"
+  "aws_db_security_group"
+  "aws_db_snapshot"
+  "aws_db_subnet_group"
+  "aws_db_event_subscription"
+  "aws_redshift_cluster"
+  "aws_redshift_parameter_group"
+  "aws_redshift_subnet_group"
+  "aws_route53_zone"
+  "aws_route53_resolver_endpoint"
+  "aws_s3_bucket"
+  "aws_sagemaker_domain"
+  "aws_sagemaker_endpoint_configuration"
+  "aws_sagemaker_model"
+  "aws_sagemaker_notebook_instance"
+  "aws_secretsmanager_secret"
+  "aws_service_discovery_service"
+  "aws_sfn_state_machine"
+  "aws_sns_topic"
+  "aws_sqs_queue"
+  "aws_wafv2_web_acl"
+)
+
+# Bash 3.2 (macOS default) has no associative arrays, so MAP is stored as two
+# parallel indexed arrays and looked up by linear scan.
+map_lookup() {
+  local key="$1" i
+  for i in "${!MAP_KEYS[@]}"; do
+    if [[ "${MAP_KEYS[$i]}" == "$key" ]]; then
+      printf '%s' "${MAP_VALS[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 # Global services recorded by Config in a single "home" region.
 # For these we take the MAX across regions instead of the SUM,
@@ -192,10 +346,72 @@ is_global() {
 
 QUERY="SELECT resourceType, COUNT(*) GROUP BY resourceType"
 
-declare -A SUM_COUNT     # regional types: summed
-declare -A MAX_COUNT     # global types: max across regions
-declare -A UNMAPPED
+# Same parallel-array approach as MAP for the runtime-populated tallies below,
+# since Bash 3.2 can't use associative arrays keyed by resourceType.
+SUM_KEYS=(); SUM_VALS=()          # regional types: summed
+MAX_KEYS=(); MAX_VALS=()          # global types: max across regions
+UNMAPPED_KEYS=(); UNMAPPED_VALS=()
 SKIPPED_REGIONS=()
+
+sum_add() { # sum_add <key> <amount> - adds amount to key's running total
+  local key="$1" amount="$2" i
+  for i in "${!SUM_KEYS[@]}"; do
+    if [[ "${SUM_KEYS[$i]}" == "$key" ]]; then
+      SUM_VALS[$i]=$(( SUM_VALS[$i] + amount ))
+      return
+    fi
+  done
+  SUM_KEYS+=("$key")
+  SUM_VALS+=("$amount")
+}
+
+sum_get() { # sum_get <key> - prints current total, or 0
+  local key="$1" i
+  for i in "${!SUM_KEYS[@]}"; do
+    [[ "${SUM_KEYS[$i]}" == "$key" ]] && { printf '%s' "${SUM_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
+
+max_update() { # max_update <key> <candidate> - keeps the larger of the two
+  local key="$1" candidate="$2" i
+  for i in "${!MAX_KEYS[@]}"; do
+    if [[ "${MAX_KEYS[$i]}" == "$key" ]]; then
+      (( candidate > MAX_VALS[$i] )) && MAX_VALS[$i]=$candidate
+      return
+    fi
+  done
+  MAX_KEYS+=("$key")
+  MAX_VALS+=("$candidate")
+}
+
+max_get() { # max_get <key> - prints current max, or 0
+  local key="$1" i
+  for i in "${!MAX_KEYS[@]}"; do
+    [[ "${MAX_KEYS[$i]}" == "$key" ]] && { printf '%s' "${MAX_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
+
+unmapped_set() { # unmapped_set <key> <count>
+  local key="$1" val="$2" i
+  for i in "${!UNMAPPED_KEYS[@]}"; do
+    if [[ "${UNMAPPED_KEYS[$i]}" == "$key" ]]; then
+      UNMAPPED_VALS[$i]=$val
+      return
+    fi
+  done
+  UNMAPPED_KEYS+=("$key")
+  UNMAPPED_VALS+=("$val")
+}
+
+unmapped_get() { # unmapped_get <key> - prints its count, or 0
+  local key="$1" i
+  for i in "${!UNMAPPED_KEYS[@]}"; do
+    [[ "${UNMAPPED_KEYS[$i]}" == "$key" ]] && { printf '%s' "${UNMAPPED_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
 
 run_query_region() {
   local region="$1" next="" out rows
@@ -211,9 +427,9 @@ run_query_region() {
     while IFS='|' read -r rtype rcount; do
       [[ -z "$rtype" ]] && continue
       if is_global "$rtype"; then
-        (( rcount > ${MAX_COUNT[$rtype]:-0} )) && MAX_COUNT[$rtype]=$rcount
+        max_update "$rtype" "$rcount"
       else
-        SUM_COUNT[$rtype]=$(( ${SUM_COUNT[$rtype]:-0} + rcount ))
+        sum_add "$rtype" "$rcount"
       fi
     done <<< "$rows"
     next=$(echo "$out" | jq -r '.NextToken // empty')
@@ -224,7 +440,7 @@ run_query_region() {
 
 echo "============================================================"
 echo " Firefly - AWS Supported Asset Count"
-echo " Account: $(aws sts get-caller-identity "${PROFILE_ARG[@]}" --query Account --output text 2>/dev/null || echo 'unknown')"
+echo " Account: $ACCOUNT"
 echo " Date:    $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo "============================================================"
 
@@ -243,7 +459,7 @@ if [[ -n "$AGGREGATOR" ]]; then
     fi
     while IFS='|' read -r rtype rcount; do
       [[ -z "$rtype" ]] && continue
-      SUM_COUNT[$rtype]=$(( ${SUM_COUNT[$rtype]:-0} + rcount ))
+      sum_add "$rtype" "$rcount"
     done <<< "$(echo "$out" | jq -r '.Results[] | fromjson | "\(.resourceType)|\(."COUNT(*)")"')"
     next=$(echo "$out" | jq -r '.NextToken // empty')
     [[ -z "$next" ]] && break
@@ -251,7 +467,13 @@ if [[ -n "$AGGREGATOR" ]]; then
 else
   if [[ -z "$REGIONS" ]]; then
     REGIONS=$(aws ec2 describe-regions "${PROFILE_ARG[@]}" \
-                --query "Regions[].RegionName" --output text)
+                --query "Regions[].RegionName" --output text 2>&1)
+    if [[ $? -ne 0 ]]; then
+      echo "ERROR: could not list AWS regions:"
+      echo "$REGIONS"
+      echo "Check IAM permissions (ec2:DescribeRegions), or pass explicit regions with -r."
+      exit 1
+    fi
   fi
   echo "Mode: per-region Config query"
   for region in $REGIONS; do
@@ -266,8 +488,8 @@ else
 fi
 
 # Merge global maxima into the totals
-for t in "${!MAX_COUNT[@]}"; do
-  SUM_COUNT[$t]=$(( ${SUM_COUNT[$t]:-0} + MAX_COUNT[$t] ))
+for t in "${MAX_KEYS[@]}"; do
+  sum_add "$t" "$(max_get "$t")"
 done
 
 # ------------------------- report -------------------------
@@ -278,15 +500,15 @@ printf "%-55s %10s\n" "Firefly-supported Terraform type" "Count"
 echo "------------------------------------------------------------"
 echo "terraform_type,aws_config_type,count" > "$OUT_CSV"
 
-for cfg_type in $(echo "${!SUM_COUNT[@]}" | tr ' ' '\n' | sort); do
-  tf_type="${MAP[$cfg_type]:-}"
-  count=${SUM_COUNT[$cfg_type]}
+for cfg_type in $(printf '%s\n' "${SUM_KEYS[@]}" | sort); do
+  tf_type=$(map_lookup "$cfg_type") || tf_type=""
+  count=$(sum_get "$cfg_type")
   if [[ -n "$tf_type" ]]; then
     printf "%-55s %10d\n" "$tf_type" "$count"
     echo "$tf_type,$cfg_type,$count" >> "$OUT_CSV"
     TOTAL=$(( TOTAL + count ))
   else
-    UNMAPPED[$cfg_type]=$count
+    unmapped_set "$cfg_type" "$count"
   fi
 done
 
@@ -295,11 +517,11 @@ printf "%-55s %10d\n" "TOTAL Firefly-supported assets" "$TOTAL"
 echo "------------------------------------------------------------"
 echo "TOTAL,,${TOTAL}" >> "$OUT_CSV"
 
-if [[ ${#UNMAPPED[@]} -gt 0 ]]; then
+if [[ ${#UNMAPPED_KEYS[@]} -gt 0 ]]; then
   echo ""
   echo "Other resource types found in AWS Config (not on the supported list / not mapped):"
-  for t in $(echo "${!UNMAPPED[@]}" | tr ' ' '\n' | sort); do
-    printf "  %-53s %10d\n" "$t" "${UNMAPPED[$t]}"
+  for t in $(printf '%s\n' "${UNMAPPED_KEYS[@]}" | sort); do
+    printf "  %-53s %10d\n" "$t" "$(unmapped_get "$t")"
   done
 fi
 
