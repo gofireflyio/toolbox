@@ -36,13 +36,14 @@ set -o pipefail
 # any time -p isn't passed. Every scalar var below has an explicit default.
 
 PROFILE_ARG=()
+PROFILE_NAME=""
 REGIONS=""
 AGGREGATOR=""
 OUT_CSV="firefly_aws_asset_count_$(date +%Y%m%d_%H%M%S).csv"
 
 while getopts "p:r:a:h" opt; do
   case $opt in
-    p) PROFILE_ARG=(--profile "$OPTARG") ;;
+    p) PROFILE_ARG=(--profile "$OPTARG"); PROFILE_NAME="$OPTARG" ;;
     r) REGIONS="$OPTARG" ;;
     a) AGGREGATOR="$OPTARG" ;;
     h) awk '/^#/{print; next} {exit}' "$0"; exit 0 ;;
@@ -52,6 +53,21 @@ done
 
 command -v aws >/dev/null || { echo "ERROR: aws CLI not found"; exit 1; }
 command -v jq  >/dev/null || { echo "ERROR: jq not found";      exit 1; }
+
+# Fail fast with a clear message if credentials are missing/expired, instead
+# of limping through to a misleading "TOTAL: 0" report (describe-regions and
+# every per-region Config query would otherwise fail silently too).
+ACCOUNT=$(aws sts get-caller-identity "${PROFILE_ARG[@]}" --query Account --output text 2>&1)
+if [[ $? -ne 0 || -z "$ACCOUNT" ]]; then
+  echo "ERROR: could not authenticate to AWS."
+  echo "$ACCOUNT"
+  if [[ -n "$PROFILE_NAME" ]]; then
+    echo "If you're using AWS SSO, try: aws sso login --profile $PROFILE_NAME"
+  else
+    echo "If you're using AWS SSO, try: aws sso login   (or aws configure to set up static credentials)"
+  fi
+  exit 1
+fi
 
 # -----------------------------------------------------------------------------
 # AWS Config resourceType -> Firefly-supported Terraform resource type
@@ -424,7 +440,7 @@ run_query_region() {
 
 echo "============================================================"
 echo " Firefly - AWS Supported Asset Count"
-echo " Account: $(aws sts get-caller-identity "${PROFILE_ARG[@]}" --query Account --output text 2>/dev/null || echo 'unknown')"
+echo " Account: $ACCOUNT"
 echo " Date:    $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo "============================================================"
 
@@ -451,7 +467,13 @@ if [[ -n "$AGGREGATOR" ]]; then
 else
   if [[ -z "$REGIONS" ]]; then
     REGIONS=$(aws ec2 describe-regions "${PROFILE_ARG[@]}" \
-                --query "Regions[].RegionName" --output text)
+                --query "Regions[].RegionName" --output text 2>&1)
+    if [[ $? -ne 0 ]]; then
+      echo "ERROR: could not list AWS regions:"
+      echo "$REGIONS"
+      echo "Check IAM permissions (ec2:DescribeRegions), or pass explicit regions with -r."
+      exit 1
+    fi
   fi
   echo "Mode: per-region Config query"
   for region in $REGIONS; do
