@@ -31,7 +31,10 @@
 #    ./firefly_azure_asset_count.sh -m MG_NAME          # a management group (recursive)
 # =============================================================================
 
-set -uo pipefail
+set -o pipefail
+# Not using `set -u`: Bash < 4.4 (macOS ships 3.2) throws "unbound variable"
+# when an empty array is expanded with "${arr[@]}", which SCOPE_ARGS hits
+# any time -s/-m isn't passed. Every scalar var below has an explicit default.
 
 SUBS=()
 MG=""
@@ -81,69 +84,158 @@ fi
 # web vs function apps under microsoft.web/sites), the ARM type is mapped to one
 # representative Terraform type; the OS/kind split is not distinguished.
 # -----------------------------------------------------------------------------
-declare -A MAP=(
-  ["microsoft.apimanagement/service"]="azurerm_api_management"
-  ["microsoft.appconfiguration/configurationstores"]="azurerm_app_configuration"
-  ["microsoft.network/applicationgateways"]="azurerm_application_gateway"
-  ["microsoft.insights/components"]="azurerm_application_insights"
-  ["microsoft.network/applicationsecuritygroups"]="azurerm_application_security_group"
-  ["microsoft.automation/automationaccounts"]="azurerm_automation_account"
-  ["microsoft.cdn/profiles"]="azurerm_cdn_frontdoor_profile"
-  ["microsoft.cognitiveservices/accounts"]="azurerm_cognitive_account"
-  ["microsoft.app/containerapps"]="azurerm_container_app"
-  ["microsoft.app/managedenvironments"]="azurerm_container_app_environment"
-  ["microsoft.containerinstance/containergroups"]="azurerm_container_group"
-  ["microsoft.containerregistry/registries"]="azurerm_container_registry"
-  ["microsoft.documentdb/databaseaccounts"]="azurerm_cosmosdb_account"
-  ["microsoft.datafactory/factories"]="azurerm_data_factory"
-  ["microsoft.databricks/workspaces"]="azurerm_databricks_workspace"
-  ["microsoft.eventgrid/systemtopics"]="azurerm_eventgrid_system_topic"
-  ["microsoft.eventhub/namespaces"]="azurerm_eventhub_namespace"
-  ["microsoft.devices/iothubs"]="azurerm_iothub"
-  ["microsoft.keyvault/vaults"]="azurerm_key_vault"
-  ["microsoft.containerservice/managedclusters"]="azurerm_kubernetes_cluster"
-  ["microsoft.kusto/clusters"]="azurerm_kusto_cluster"
-  ["microsoft.network/loadbalancers"]="azurerm_lb"
-  ["microsoft.compute/virtualmachines"]="azurerm_linux_virtual_machine"
-  ["microsoft.compute/virtualmachinescalesets"]="azurerm_virtual_machine_scale_set"
-  ["microsoft.web/sites"]="azurerm_linux_web_app"
-  ["microsoft.operationalinsights/workspaces"]="azurerm_log_analytics_workspace"
-  ["microsoft.operationsmanagement/solutions"]="azurerm_log_analytics_solution"
-  ["microsoft.logic/workflows"]="azurerm_logic_app_workflow"
-  ["microsoft.machinelearningservices/workspaces"]="azurerm_machine_learning_workspace"
-  ["microsoft.compute/disks"]="azurerm_managed_disk"
-  ["microsoft.maps/accounts"]="azurerm_maps_account"
-  ["microsoft.insights/actiongroups"]="azurerm_monitor_action_group"
-  ["microsoft.insights/activitylogalerts"]="azurerm_monitor_activity_log_alert"
-  ["microsoft.insights/autoscalesettings"]="azurerm_monitor_autoscale_setting"
-  ["microsoft.insights/metricalerts"]="azurerm_monitor_metric_alert"
-  ["microsoft.insights/scheduledqueryrules"]="azurerm_monitor_scheduled_query_rules_alert_v2"
-  ["microsoft.insights/privatelinkscopes"]="azurerm_monitor_private_link_scope"
-  ["microsoft.sql/servers"]="azurerm_mssql_server"
-  ["microsoft.sql/managedinstances"]="azurerm_mssql_managed_instance"
-  ["microsoft.sqlvirtualmachine/sqlvirtualmachines"]="azurerm_mssql_virtual_machine"
-  ["microsoft.network/natgateways"]="azurerm_nat_gateway"
-  ["microsoft.network/networkinterfaces"]="azurerm_network_interface"
-  ["microsoft.network/networksecuritygroups"]="azurerm_network_security_group"
-  ["microsoft.authorization/policydefinitions"]="azurerm_policy_definition"
-  ["microsoft.dbforpostgresql/flexibleservers"]="azurerm_postgresql_flexible_server"
-  ["microsoft.dbforpostgresql/servers"]="azurerm_postgresql_server"
-  ["microsoft.network/privatednszones"]="azurerm_private_dns_zone"
-  ["microsoft.network/privateendpoints"]="azurerm_private_endpoint"
-  ["microsoft.network/publicipaddresses"]="azurerm_public_ip"
-  ["microsoft.cache/redis"]="azurerm_redis_cache"
-  ["microsoft.network/routetables"]="azurerm_route_table"
-  ["microsoft.search/searchservices"]="azurerm_search_service"
-  ["microsoft.web/serverfarms"]="azurerm_service_plan"
-  ["microsoft.servicebus/namespaces"]="azurerm_servicebus_namespace"
-  ["microsoft.storage/storageaccounts"]="azurerm_storage_account"
-  ["microsoft.streamanalytics/streamingjobs"]="azurerm_stream_analytics_job"
-  ["microsoft.network/trafficmanagerprofiles"]="azurerm_traffic_manager_profile"
-  ["microsoft.managedidentity/userassignedidentities"]="azurerm_user_assigned_identity"
-  ["microsoft.network/virtualnetworks"]="azurerm_virtual_network"
-  ["microsoft.network/virtualnetworkgateways"]="azurerm_virtual_network_gateway"
-  ["microsoft.network/applicationgatewaywebapplicationfirewallpolicies"]="azurerm_web_application_firewall_policy"
+MAP_KEYS=(
+  "microsoft.apimanagement/service"
+  "microsoft.appconfiguration/configurationstores"
+  "microsoft.network/applicationgateways"
+  "microsoft.insights/components"
+  "microsoft.network/applicationsecuritygroups"
+  "microsoft.automation/automationaccounts"
+  "microsoft.cdn/profiles"
+  "microsoft.cognitiveservices/accounts"
+  "microsoft.app/containerapps"
+  "microsoft.app/managedenvironments"
+  "microsoft.containerinstance/containergroups"
+  "microsoft.containerregistry/registries"
+  "microsoft.documentdb/databaseaccounts"
+  "microsoft.datafactory/factories"
+  "microsoft.databricks/workspaces"
+  "microsoft.eventgrid/systemtopics"
+  "microsoft.eventhub/namespaces"
+  "microsoft.devices/iothubs"
+  "microsoft.keyvault/vaults"
+  "microsoft.containerservice/managedclusters"
+  "microsoft.kusto/clusters"
+  "microsoft.network/loadbalancers"
+  "microsoft.compute/virtualmachines"
+  "microsoft.compute/virtualmachinescalesets"
+  "microsoft.web/sites"
+  "microsoft.operationalinsights/workspaces"
+  "microsoft.operationsmanagement/solutions"
+  "microsoft.logic/workflows"
+  "microsoft.machinelearningservices/workspaces"
+  "microsoft.compute/disks"
+  "microsoft.maps/accounts"
+  "microsoft.insights/actiongroups"
+  "microsoft.insights/activitylogalerts"
+  "microsoft.insights/autoscalesettings"
+  "microsoft.insights/metricalerts"
+  "microsoft.insights/scheduledqueryrules"
+  "microsoft.insights/privatelinkscopes"
+  "microsoft.sql/servers"
+  "microsoft.sql/managedinstances"
+  "microsoft.sqlvirtualmachine/sqlvirtualmachines"
+  "microsoft.network/natgateways"
+  "microsoft.network/networkinterfaces"
+  "microsoft.network/networksecuritygroups"
+  "microsoft.authorization/policydefinitions"
+  "microsoft.dbforpostgresql/flexibleservers"
+  "microsoft.dbforpostgresql/servers"
+  "microsoft.network/privatednszones"
+  "microsoft.network/privateendpoints"
+  "microsoft.network/publicipaddresses"
+  "microsoft.cache/redis"
+  "microsoft.network/routetables"
+  "microsoft.search/searchservices"
+  "microsoft.web/serverfarms"
+  "microsoft.servicebus/namespaces"
+  "microsoft.storage/storageaccounts"
+  "microsoft.streamanalytics/streamingjobs"
+  "microsoft.network/trafficmanagerprofiles"
+  "microsoft.managedidentity/userassignedidentities"
+  "microsoft.network/virtualnetworks"
+  "microsoft.network/virtualnetworkgateways"
+  "microsoft.network/applicationgatewaywebapplicationfirewallpolicies"
 )
+
+MAP_VALS=(
+  "azurerm_api_management"
+  "azurerm_app_configuration"
+  "azurerm_application_gateway"
+  "azurerm_application_insights"
+  "azurerm_application_security_group"
+  "azurerm_automation_account"
+  "azurerm_cdn_frontdoor_profile"
+  "azurerm_cognitive_account"
+  "azurerm_container_app"
+  "azurerm_container_app_environment"
+  "azurerm_container_group"
+  "azurerm_container_registry"
+  "azurerm_cosmosdb_account"
+  "azurerm_data_factory"
+  "azurerm_databricks_workspace"
+  "azurerm_eventgrid_system_topic"
+  "azurerm_eventhub_namespace"
+  "azurerm_iothub"
+  "azurerm_key_vault"
+  "azurerm_kubernetes_cluster"
+  "azurerm_kusto_cluster"
+  "azurerm_lb"
+  "azurerm_linux_virtual_machine"
+  "azurerm_virtual_machine_scale_set"
+  "azurerm_linux_web_app"
+  "azurerm_log_analytics_workspace"
+  "azurerm_log_analytics_solution"
+  "azurerm_logic_app_workflow"
+  "azurerm_machine_learning_workspace"
+  "azurerm_managed_disk"
+  "azurerm_maps_account"
+  "azurerm_monitor_action_group"
+  "azurerm_monitor_activity_log_alert"
+  "azurerm_monitor_autoscale_setting"
+  "azurerm_monitor_metric_alert"
+  "azurerm_monitor_scheduled_query_rules_alert_v2"
+  "azurerm_monitor_private_link_scope"
+  "azurerm_mssql_server"
+  "azurerm_mssql_managed_instance"
+  "azurerm_mssql_virtual_machine"
+  "azurerm_nat_gateway"
+  "azurerm_network_interface"
+  "azurerm_network_security_group"
+  "azurerm_policy_definition"
+  "azurerm_postgresql_flexible_server"
+  "azurerm_postgresql_server"
+  "azurerm_private_dns_zone"
+  "azurerm_private_endpoint"
+  "azurerm_public_ip"
+  "azurerm_redis_cache"
+  "azurerm_route_table"
+  "azurerm_search_service"
+  "azurerm_service_plan"
+  "azurerm_servicebus_namespace"
+  "azurerm_storage_account"
+  "azurerm_stream_analytics_job"
+  "azurerm_traffic_manager_profile"
+  "azurerm_user_assigned_identity"
+  "azurerm_virtual_network"
+  "azurerm_virtual_network_gateway"
+  "azurerm_web_application_firewall_policy"
+)
+
+# Bash 3.2 (macOS default) has no associative arrays, so MAP is stored as two
+# parallel indexed arrays and looked up by linear scan.
+map_lookup() {
+  local key="$1" i
+  for i in "${!MAP_KEYS[@]}"; do
+    if [[ "${MAP_KEYS[$i]}" == "$key" ]]; then
+      printf '%s' "${MAP_VALS[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+map_set() { # map_set <key> <val> - used for the resource-group entry added at runtime
+  local key="$1" val="$2" i
+  for i in "${!MAP_KEYS[@]}"; do
+    if [[ "${MAP_KEYS[$i]}" == "$key" ]]; then
+      MAP_VALS[$i]=$val
+      return
+    fi
+  done
+  MAP_KEYS+=("$key")
+  MAP_VALS+=("$val")
+}
 
 echo "============================================================"
 echo " Firefly - Azure Supported Asset Count"
@@ -165,10 +257,33 @@ if [[ $? -ne 0 ]]; then
   exit 1
 fi
 
-declare -A COUNTS
+# Bash 3.2 (macOS default) has no associative arrays, so COUNTS/UNMAPPED are
+# each stored as two parallel indexed arrays, same approach as MAP above.
+COUNT_KEYS=(); COUNT_VALS=()
+
+count_set() { # count_set <key> <val>
+  local key="$1" val="$2" i
+  for i in "${!COUNT_KEYS[@]}"; do
+    if [[ "${COUNT_KEYS[$i]}" == "$key" ]]; then
+      COUNT_VALS[$i]=$val
+      return
+    fi
+  done
+  COUNT_KEYS+=("$key")
+  COUNT_VALS+=("$val")
+}
+
+count_get() { # count_get <key> - prints its count, or 0
+  local key="$1" i
+  for i in "${!COUNT_KEYS[@]}"; do
+    [[ "${COUNT_KEYS[$i]}" == "$key" ]] && { printf '%s' "${COUNT_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
+
 while IFS='|' read -r atype acount; do
   [[ -z "$atype" ]] && continue
-  COUNTS["$atype"]=$acount
+  count_set "$atype" "$acount"
 done <<< "$(echo "$RAW" | jq -r '.data[] | "\(.type)|\(.count_)"')"
 
 # Resource groups live in a separate Resource Graph table.
@@ -176,28 +291,49 @@ RG_COUNT=$(az graph query "${SCOPE_ARGS[@]}" \
              -q "ResourceContainers | where type =~ 'microsoft.resources/subscriptions/resourcegroups' | summarize count()" \
              -o json 2>/dev/null | jq -r '.data[0].count_ // 0')
 if [[ "${RG_COUNT:-0}" -gt 0 ]]; then
-  COUNTS["microsoft.resources/subscriptions/resourcegroups"]=$RG_COUNT
-  MAP["microsoft.resources/subscriptions/resourcegroups"]="azurerm_resource_group"
+  count_set "microsoft.resources/subscriptions/resourcegroups" "$RG_COUNT"
+  map_set "microsoft.resources/subscriptions/resourcegroups" "azurerm_resource_group"
 fi
 
 # ------------------------- report -------------------------
 TOTAL=0
-declare -A UNMAPPED
+UNMAPPED_KEYS=(); UNMAPPED_VALS=()
+
+unmapped_set() { # unmapped_set <key> <count>
+  local key="$1" val="$2" i
+  for i in "${!UNMAPPED_KEYS[@]}"; do
+    if [[ "${UNMAPPED_KEYS[$i]}" == "$key" ]]; then
+      UNMAPPED_VALS[$i]=$val
+      return
+    fi
+  done
+  UNMAPPED_KEYS+=("$key")
+  UNMAPPED_VALS+=("$val")
+}
+
+unmapped_get() { # unmapped_get <key> - prints its count, or 0
+  local key="$1" i
+  for i in "${!UNMAPPED_KEYS[@]}"; do
+    [[ "${UNMAPPED_KEYS[$i]}" == "$key" ]] && { printf '%s' "${UNMAPPED_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
+
 echo ""
 echo "------------------------------------------------------------"
 printf "%-58s %10s\n" "Firefly-supported Terraform type" "Count"
 echo "------------------------------------------------------------"
 echo "terraform_type,arm_type,count" > "$OUT_CSV"
 
-for arm_type in $(echo "${!COUNTS[@]}" | tr ' ' '\n' | sort); do
-  tf_type="${MAP[$arm_type]:-}"
-  count=${COUNTS[$arm_type]}
+for arm_type in $(printf '%s\n' "${COUNT_KEYS[@]}" | sort); do
+  tf_type=$(map_lookup "$arm_type") || tf_type=""
+  count=$(count_get "$arm_type")
   if [[ -n "$tf_type" ]]; then
     printf "%-58s %10d\n" "$tf_type" "$count"
     echo "$tf_type,$arm_type,$count" >> "$OUT_CSV"
     TOTAL=$(( TOTAL + count ))
   else
-    UNMAPPED[$arm_type]=$count
+    unmapped_set "$arm_type" "$count"
   fi
 done
 
@@ -206,11 +342,11 @@ printf "%-58s %10d\n" "TOTAL Firefly-supported assets" "$TOTAL"
 echo "------------------------------------------------------------"
 echo "TOTAL,,${TOTAL}" >> "$OUT_CSV"
 
-if [[ ${#UNMAPPED[@]} -gt 0 ]]; then
+if [[ ${#UNMAPPED_KEYS[@]} -gt 0 ]]; then
   echo ""
   echo "Other ARM types found in Resource Graph (not on the supported list / not mapped):"
-  for t in $(echo "${!UNMAPPED[@]}" | tr ' ' '\n' | sort); do
-    printf "  %-56s %10d\n" "$t" "${UNMAPPED[$t]}"
+  for t in $(printf '%s\n' "${UNMAPPED_KEYS[@]}" | sort); do
+    printf "  %-56s %10d\n" "$t" "$(unmapped_get "$t")"
   done
 fi
 

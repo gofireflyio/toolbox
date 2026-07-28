@@ -29,7 +29,10 @@
 #    ./firefly_gcp_asset_count.sh -f FOLDER_ID           # a folder
 # =============================================================================
 
-set -uo pipefail
+set -o pipefail
+# Not using `set -u`: Bash < 4.4 (macOS ships 3.2) throws "unbound variable"
+# when an empty array is expanded with "${arr[@]}". No arrays here today, but
+# keeping this consistent with the other two scripts in this repo.
 
 SCOPE=""
 OUT_CSV="firefly_gcp_asset_count_$(date +%Y%m%d_%H%M%S).csv"
@@ -60,72 +63,152 @@ fi
 # (IAM bindings/members/policies and a few API-config-only types are not
 #  discrete CAI assets, so they cannot be counted this way - see note below.)
 # -----------------------------------------------------------------------------
-declare -A MAP=(
-  ["apigee.googleapis.com/Organization"]="google_apigee_organization"
-  ["apigee.googleapis.com/Environment"]="google_apigee_environment"
-  ["apigee.googleapis.com/EnvironmentGroup"]="google_apigee_envgroup"
-  ["apigee.googleapis.com/Instance"]="google_apigee_instance"
-  ["bigquery.googleapis.com/Dataset"]="google_bigquery_dataset"
-  ["bigquery.googleapis.com/Table"]="google_bigquery_table"
-  ["bigquery.googleapis.com/Routine"]="google_bigquery_routine"
-  ["bigtableadmin.googleapis.com/AppProfile"]="google_bigtable_app_profile"
-  ["bigtableadmin.googleapis.com/Instance"]="google_bigtable_instance"
-  ["bigtableadmin.googleapis.com/Table"]="google_bigtable_table"
-  ["run.googleapis.com/Service"]="google_cloud_run_v2_service"
-  ["cloudscheduler.googleapis.com/Job"]="google_cloud_scheduler_job"
-  ["cloudfunctions.googleapis.com/CloudFunction"]="google_cloudfunctions_function"
-  ["cloudfunctions.googleapis.com/Function"]="google_cloudfunctions2_function"
-  ["composer.googleapis.com/Environment"]="google_composer_environment"
-  ["compute.googleapis.com/Address"]="google_compute_address"
-  ["compute.googleapis.com/GlobalAddress"]="google_compute_global_address"
-  ["compute.googleapis.com/Autoscaler"]="google_compute_autoscaler"
-  ["compute.googleapis.com/BackendService"]="google_compute_backend_service"
-  ["compute.googleapis.com/RegionBackendService"]="google_compute_region_backend_service"
-  ["compute.googleapis.com/Disk"]="google_compute_disk"
-  ["compute.googleapis.com/RegionDisk"]="google_compute_region_disk"
-  ["compute.googleapis.com/Firewall"]="google_compute_firewall"
-  ["compute.googleapis.com/ForwardingRule"]="google_compute_forwarding_rule"
-  ["compute.googleapis.com/GlobalForwardingRule"]="google_compute_global_forwarding_rule"
-  ["compute.googleapis.com/HealthCheck"]="google_compute_health_check"
-  ["compute.googleapis.com/Image"]="google_compute_image"
-  ["compute.googleapis.com/Instance"]="google_compute_instance"
-  ["compute.googleapis.com/InstanceGroup"]="google_compute_instance_group"
-  ["compute.googleapis.com/InstanceGroupManager"]="google_compute_instance_group_manager"
-  ["compute.googleapis.com/InstanceTemplate"]="google_compute_instance_template"
-  ["compute.googleapis.com/Network"]="google_compute_network"
-  ["compute.googleapis.com/NetworkEndpointGroup"]="google_compute_network_endpoint_group"
-  ["compute.googleapis.com/ResourcePolicy"]="google_compute_resource_policy"
-  ["compute.googleapis.com/Router"]="google_compute_router"
-  ["compute.googleapis.com/SecurityPolicy"]="google_compute_security_policy"
-  ["compute.googleapis.com/Snapshot"]="google_compute_snapshot"
-  ["compute.googleapis.com/SslCertificate"]="google_compute_ssl_certificate"
-  ["compute.googleapis.com/SslPolicy"]="google_compute_ssl_policy"
-  ["compute.googleapis.com/Subnetwork"]="google_compute_subnetwork"
-  ["compute.googleapis.com/TargetHttpProxy"]="google_compute_target_http_proxy"
-  ["compute.googleapis.com/TargetHttpsProxy"]="google_compute_target_https_proxy"
-  ["compute.googleapis.com/TargetPool"]="google_compute_target_pool"
-  ["compute.googleapis.com/UrlMap"]="google_compute_url_map"
-  ["container.googleapis.com/Cluster"]="google_container_cluster"
-  ["container.googleapis.com/NodePool"]="google_container_node_pool"
-  ["dns.googleapis.com/ManagedZone"]="google_dns_managed_zone"
-  ["dns.googleapis.com/ResourceRecordSet"]="google_dns_record_set"
-  ["file.googleapis.com/Backup"]="google_filestore_backup"
-  ["file.googleapis.com/Instance"]="google_filestore_instance"
-  ["iam.googleapis.com/ServiceAccount"]="google_service_account"
-  ["iam.googleapis.com/Role"]="google_project_iam_custom_role"
-  ["iam.googleapis.com/WorkloadIdentityPool"]="google_iam_workload_identity_pool"
-  ["logging.googleapis.com/LogSink"]="google_logging_project_sink"
-  ["pubsub.googleapis.com/Schema"]="google_pubsub_schema"
-  ["pubsub.googleapis.com/Subscription"]="google_pubsub_subscription"
-  ["pubsub.googleapis.com/Topic"]="google_pubsub_topic"
-  ["redis.googleapis.com/Instance"]="google_redis_instance"
-  ["secretmanager.googleapis.com/Secret"]="google_secret_manager_secret"
-  ["spanner.googleapis.com/Database"]="google_spanner_database"
-  ["spanner.googleapis.com/Instance"]="google_spanner_instance"
-  ["sqladmin.googleapis.com/Instance"]="google_sql_database_instance"
-  ["storage.googleapis.com/Bucket"]="google_storage_bucket"
-  ["cloudresourcemanager.googleapis.com/Project"]="google_project"
+MAP_KEYS=(
+  "apigee.googleapis.com/Organization"
+  "apigee.googleapis.com/Environment"
+  "apigee.googleapis.com/EnvironmentGroup"
+  "apigee.googleapis.com/Instance"
+  "bigquery.googleapis.com/Dataset"
+  "bigquery.googleapis.com/Table"
+  "bigquery.googleapis.com/Routine"
+  "bigtableadmin.googleapis.com/AppProfile"
+  "bigtableadmin.googleapis.com/Instance"
+  "bigtableadmin.googleapis.com/Table"
+  "run.googleapis.com/Service"
+  "cloudscheduler.googleapis.com/Job"
+  "cloudfunctions.googleapis.com/CloudFunction"
+  "cloudfunctions.googleapis.com/Function"
+  "composer.googleapis.com/Environment"
+  "compute.googleapis.com/Address"
+  "compute.googleapis.com/GlobalAddress"
+  "compute.googleapis.com/Autoscaler"
+  "compute.googleapis.com/BackendService"
+  "compute.googleapis.com/RegionBackendService"
+  "compute.googleapis.com/Disk"
+  "compute.googleapis.com/RegionDisk"
+  "compute.googleapis.com/Firewall"
+  "compute.googleapis.com/ForwardingRule"
+  "compute.googleapis.com/GlobalForwardingRule"
+  "compute.googleapis.com/HealthCheck"
+  "compute.googleapis.com/Image"
+  "compute.googleapis.com/Instance"
+  "compute.googleapis.com/InstanceGroup"
+  "compute.googleapis.com/InstanceGroupManager"
+  "compute.googleapis.com/InstanceTemplate"
+  "compute.googleapis.com/Network"
+  "compute.googleapis.com/NetworkEndpointGroup"
+  "compute.googleapis.com/ResourcePolicy"
+  "compute.googleapis.com/Router"
+  "compute.googleapis.com/SecurityPolicy"
+  "compute.googleapis.com/Snapshot"
+  "compute.googleapis.com/SslCertificate"
+  "compute.googleapis.com/SslPolicy"
+  "compute.googleapis.com/Subnetwork"
+  "compute.googleapis.com/TargetHttpProxy"
+  "compute.googleapis.com/TargetHttpsProxy"
+  "compute.googleapis.com/TargetPool"
+  "compute.googleapis.com/UrlMap"
+  "container.googleapis.com/Cluster"
+  "container.googleapis.com/NodePool"
+  "dns.googleapis.com/ManagedZone"
+  "dns.googleapis.com/ResourceRecordSet"
+  "file.googleapis.com/Backup"
+  "file.googleapis.com/Instance"
+  "iam.googleapis.com/ServiceAccount"
+  "iam.googleapis.com/Role"
+  "iam.googleapis.com/WorkloadIdentityPool"
+  "logging.googleapis.com/LogSink"
+  "pubsub.googleapis.com/Schema"
+  "pubsub.googleapis.com/Subscription"
+  "pubsub.googleapis.com/Topic"
+  "redis.googleapis.com/Instance"
+  "secretmanager.googleapis.com/Secret"
+  "spanner.googleapis.com/Database"
+  "spanner.googleapis.com/Instance"
+  "sqladmin.googleapis.com/Instance"
+  "storage.googleapis.com/Bucket"
+  "cloudresourcemanager.googleapis.com/Project"
 )
+
+MAP_VALS=(
+  "google_apigee_organization"
+  "google_apigee_environment"
+  "google_apigee_envgroup"
+  "google_apigee_instance"
+  "google_bigquery_dataset"
+  "google_bigquery_table"
+  "google_bigquery_routine"
+  "google_bigtable_app_profile"
+  "google_bigtable_instance"
+  "google_bigtable_table"
+  "google_cloud_run_v2_service"
+  "google_cloud_scheduler_job"
+  "google_cloudfunctions_function"
+  "google_cloudfunctions2_function"
+  "google_composer_environment"
+  "google_compute_address"
+  "google_compute_global_address"
+  "google_compute_autoscaler"
+  "google_compute_backend_service"
+  "google_compute_region_backend_service"
+  "google_compute_disk"
+  "google_compute_region_disk"
+  "google_compute_firewall"
+  "google_compute_forwarding_rule"
+  "google_compute_global_forwarding_rule"
+  "google_compute_health_check"
+  "google_compute_image"
+  "google_compute_instance"
+  "google_compute_instance_group"
+  "google_compute_instance_group_manager"
+  "google_compute_instance_template"
+  "google_compute_network"
+  "google_compute_network_endpoint_group"
+  "google_compute_resource_policy"
+  "google_compute_router"
+  "google_compute_security_policy"
+  "google_compute_snapshot"
+  "google_compute_ssl_certificate"
+  "google_compute_ssl_policy"
+  "google_compute_subnetwork"
+  "google_compute_target_http_proxy"
+  "google_compute_target_https_proxy"
+  "google_compute_target_pool"
+  "google_compute_url_map"
+  "google_container_cluster"
+  "google_container_node_pool"
+  "google_dns_managed_zone"
+  "google_dns_record_set"
+  "google_filestore_backup"
+  "google_filestore_instance"
+  "google_service_account"
+  "google_project_iam_custom_role"
+  "google_iam_workload_identity_pool"
+  "google_logging_project_sink"
+  "google_pubsub_schema"
+  "google_pubsub_subscription"
+  "google_pubsub_topic"
+  "google_redis_instance"
+  "google_secret_manager_secret"
+  "google_spanner_database"
+  "google_spanner_instance"
+  "google_sql_database_instance"
+  "google_storage_bucket"
+  "google_project"
+)
+
+# Bash 3.2 (macOS default) has no associative arrays, so MAP is stored as two
+# parallel indexed arrays and looked up by linear scan.
+map_lookup() {
+  local key="$1" i
+  for i in "${!MAP_KEYS[@]}"; do
+    if [[ "${MAP_KEYS[$i]}" == "$key" ]]; then
+      printf '%s' "${MAP_VALS[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 echo "============================================================"
 echo " Firefly - GCP Supported Asset Count"
@@ -149,30 +232,74 @@ if [[ $? -ne 0 ]]; then
   exit 1
 fi
 
-declare -A COUNTS
+# Bash 3.2 (macOS default) has no associative arrays, so COUNTS/UNMAPPED are
+# each stored as two parallel indexed arrays, same approach as MAP above.
+COUNT_KEYS=(); COUNT_VALS=()
+
+count_set() { # count_set <key> <val>
+  local key="$1" val="$2" i
+  for i in "${!COUNT_KEYS[@]}"; do
+    if [[ "${COUNT_KEYS[$i]}" == "$key" ]]; then
+      COUNT_VALS[$i]=$val
+      return
+    fi
+  done
+  COUNT_KEYS+=("$key")
+  COUNT_VALS+=("$val")
+}
+
+count_get() { # count_get <key> - prints its count, or 0
+  local key="$1" i
+  for i in "${!COUNT_KEYS[@]}"; do
+    [[ "${COUNT_KEYS[$i]}" == "$key" ]] && { printf '%s' "${COUNT_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
+
 while read -r c t; do
   [[ -z "${t:-}" ]] && continue
-  COUNTS[$t]=$c
+  count_set "$t" "$c"
 done <<< "$(echo "$RAW" | sort | uniq -c | awk '{print $1, $2}')"
 
 # ------------------------- report -------------------------
 TOTAL=0
-declare -A UNMAPPED
+UNMAPPED_KEYS=(); UNMAPPED_VALS=()
+
+unmapped_set() { # unmapped_set <key> <count>
+  local key="$1" val="$2" i
+  for i in "${!UNMAPPED_KEYS[@]}"; do
+    if [[ "${UNMAPPED_KEYS[$i]}" == "$key" ]]; then
+      UNMAPPED_VALS[$i]=$val
+      return
+    fi
+  done
+  UNMAPPED_KEYS+=("$key")
+  UNMAPPED_VALS+=("$val")
+}
+
+unmapped_get() { # unmapped_get <key> - prints its count, or 0
+  local key="$1" i
+  for i in "${!UNMAPPED_KEYS[@]}"; do
+    [[ "${UNMAPPED_KEYS[$i]}" == "$key" ]] && { printf '%s' "${UNMAPPED_VALS[$i]}"; return; }
+  done
+  printf '0'
+}
+
 echo ""
 echo "------------------------------------------------------------"
 printf "%-55s %10s\n" "Firefly-supported Terraform type" "Count"
 echo "------------------------------------------------------------"
 echo "terraform_type,cai_asset_type,count" > "$OUT_CSV"
 
-for cai_type in $(echo "${!COUNTS[@]}" | tr ' ' '\n' | sort); do
-  tf_type="${MAP[$cai_type]:-}"
-  count=${COUNTS[$cai_type]}
+for cai_type in $(printf '%s\n' "${COUNT_KEYS[@]}" | sort); do
+  tf_type=$(map_lookup "$cai_type") || tf_type=""
+  count=$(count_get "$cai_type")
   if [[ -n "$tf_type" ]]; then
     printf "%-55s %10d\n" "$tf_type" "$count"
     echo "$tf_type,$cai_type,$count" >> "$OUT_CSV"
     TOTAL=$(( TOTAL + count ))
   else
-    UNMAPPED[$cai_type]=$count
+    unmapped_set "$cai_type" "$count"
   fi
 done
 
@@ -181,11 +308,11 @@ printf "%-55s %10d\n" "TOTAL Firefly-supported assets" "$TOTAL"
 echo "------------------------------------------------------------"
 echo "TOTAL,,${TOTAL}" >> "$OUT_CSV"
 
-if [[ ${#UNMAPPED[@]} -gt 0 ]]; then
+if [[ ${#UNMAPPED_KEYS[@]} -gt 0 ]]; then
   echo ""
   echo "Other asset types found in Cloud Asset Inventory (not on the supported list / not mapped):"
-  for t in $(echo "${!UNMAPPED[@]}" | tr ' ' '\n' | sort); do
-    printf "  %-53s %10d\n" "$t" "${UNMAPPED[$t]}"
+  for t in $(printf '%s\n' "${UNMAPPED_KEYS[@]}" | sort); do
+    printf "  %-53s %10d\n" "$t" "$(unmapped_get "$t")"
   done
 fi
 
