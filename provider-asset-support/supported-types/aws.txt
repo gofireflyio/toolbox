@@ -1,4 +1,4 @@
-# Firefly-supported AWS Terraform resource types (300) - source: AWS Provider (Confluence SEKH)
+# Firefly-supported AWS Terraform resource types (308) - source: AWS Provider (Confluence SEKH)
 aws_acm_certificate
 aws_ami
 aws_api_gateway_api_key
@@ -100,6 +100,7 @@ aws_default_network_acl
 aws_directory_service_directory
 aws_dms_endpoint
 aws_dms_replication_instance
+aws_dms_replication_task
 aws_docdb_cluster
 aws_docdb_cluster_instance
 aws_docdb_cluster_parameter_group
@@ -154,6 +155,10 @@ aws_elasticsearch_domain
 aws_elb
 aws_emr_cluster
 aws_flow_log
+aws_fsx_ontap_file_system
+aws_fsx_ontap_storage_virtual_machine
+aws_fsx_ontap_volume
+aws_fsx_windows_file_system
 aws_globalaccelerator_accelerator
 aws_globalaccelerator_listener
 aws_glue_catalog_database
@@ -214,6 +219,7 @@ aws_opensearch_domain
 aws_organizations_policy
 aws_organizations_policy_attachment
 aws_organizations_resource_policy
+aws_osis_pipeline
 aws_prometheus_rule_group_namespace
 aws_prometheus_workspace
 aws_quicksight_data_source
@@ -285,7 +291,9 @@ aws_ssm_parameter
 aws_subnet
 aws_transfer_access
 aws_transfer_server
+aws_transfer_ssh_key
 aws_transfer_user
+aws_transfer_workflow
 aws_vpc
 aws_vpc_dhcp_options
 aws_vpc_endpoint
