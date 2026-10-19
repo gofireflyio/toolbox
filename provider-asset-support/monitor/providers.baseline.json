@@ -4,8 +4,8 @@
     "aws": {
       "page_id": "531169307",
       "title": "AWS Provider",
-      "version": 43,
-      "count": 308,
+      "version": 44,
+      "count": 311,
       "types": [
         "aws_acm_certificate",
         "aws_ami",
@@ -314,15 +314,20 @@
         "aws_vpn_connection",
         "aws_vpn_gateway",
         "aws_wafv2_web_acl",
-        "aws_wafv2_web_acl_logging_configuration"
+        "aws_wafv2_web_acl_logging_configuration",
+        "aws_workspaces_directory",
+        "aws_workspaces_ip_group",
+        "aws_workspaces_workspace"
       ]
     },
     "azure": {
       "page_id": "531169349",
       "title": "Azure Provider",
-      "version": 44,
-      "count": 130,
+      "version": 45,
+      "count": 135,
       "types": [
+        "azurerm_ai_foundry",
+        "azurerm_ai_foundry_project",
         "azurerm_api_management",
         "azurerm_app_configuration",
         "azurerm_app_configuration_key",
@@ -366,6 +371,7 @@
         "azurerm_iothub",
         "azurerm_key_vault",
         "azurerm_key_vault_access_policy",
+        "azurerm_key_vault_certificate",
         "azurerm_key_vault_secret",
         "azurerm_kubernetes_cluster",
         "azurerm_kubernetes_cluster_node_pool",
@@ -435,7 +441,9 @@
         "azurerm_storage_account",
         "azurerm_storage_account_network_rules",
         "azurerm_storage_container",
+        "azurerm_storage_queue",
         "azurerm_storage_share",
+        "azurerm_storage_table",
         "azurerm_stream_analytics_job",
         "azurerm_subnet",
         "azurerm_subnet_network_security_group_association",
@@ -458,8 +466,8 @@
     "gcp": {
       "page_id": "531169328",
       "title": "Google Cloud Provider",
-      "version": 14,
-      "count": 99,
+      "version": 15,
+      "count": 102,
       "types": [
         "google_apigee_api",
         "google_apigee_api_deployment",
@@ -538,11 +546,14 @@
         "google_filestore_backup",
         "google_filestore_instance",
         "google_filestore_snapshot",
+        "google_folder_organization_policy",
         "google_iam_workload_identity_pool",
         "google_logging_project_sink",
+        "google_organization_policy",
         "google_project",
         "google_project_iam_custom_role",
         "google_project_iam_member",
+        "google_project_organization_policy",
         "google_pubsub_schema",
         "google_pubsub_subscription",
         "google_pubsub_topic",
