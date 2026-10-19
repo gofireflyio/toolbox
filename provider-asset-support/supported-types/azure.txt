@@ -1,4 +1,6 @@
-# Firefly-supported Azure Terraform resource types (130) - source: Azure Provider (Confluence SEKH)
+# Firefly-supported Azure Terraform resource types (135) - source: Azure Provider (Confluence SEKH)
+azurerm_ai_foundry
+azurerm_ai_foundry_project
 azurerm_api_management
 azurerm_app_configuration
 azurerm_app_configuration_key
@@ -42,6 +44,7 @@ azurerm_federated_identity_credential
 azurerm_iothub
 azurerm_key_vault
 azurerm_key_vault_access_policy
+azurerm_key_vault_certificate
 azurerm_key_vault_secret
 azurerm_kubernetes_cluster
 azurerm_kubernetes_cluster_node_pool
@@ -111,7 +114,9 @@ azurerm_servicebus_topic_authorization_rule
 azurerm_storage_account
 azurerm_storage_account_network_rules
 azurerm_storage_container
+azurerm_storage_queue
 azurerm_storage_share
+azurerm_storage_table
 azurerm_stream_analytics_job
 azurerm_subnet
 azurerm_subnet_network_security_group_association

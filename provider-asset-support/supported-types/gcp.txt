@@ -1,4 +1,4 @@
-# Firefly-supported GCP Terraform resource types (99) - source: Google Cloud Provider (Confluence SEKH)
+# Firefly-supported GCP Terraform resource types (102) - source: Google Cloud Provider (Confluence SEKH)
 google_apigee_api
 google_apigee_api_deployment
 google_apigee_api_product
@@ -76,11 +76,14 @@ google_dns_record_set
 google_filestore_backup
 google_filestore_instance
 google_filestore_snapshot
+google_folder_organization_policy
 google_iam_workload_identity_pool
 google_logging_project_sink
+google_organization_policy
 google_project
 google_project_iam_custom_role
 google_project_iam_member
+google_project_organization_policy
 google_pubsub_schema
 google_pubsub_subscription
 google_pubsub_topic
