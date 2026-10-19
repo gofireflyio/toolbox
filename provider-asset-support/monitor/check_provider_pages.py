@@ -16,19 +16,31 @@ biweekly GitHub Action, this script:
      deterministic (sorted, no timestamps) so `git` is the source of truth for
      "did anything change".
   3. Writes monitor/report.md describing what changed since the committed
-     baseline, plus a checklist of which asset-count scripts / PDFs need a
+     baseline, plus a checklist of which asset-count script mappings need a
      human follow-up (new supported types that are not yet mapped in a script
      cannot be auto-added, because the mapping needs the cloud-native inventory
-     type, which the Confluence list does not provide).
+     type, which the Confluence list does not provide; types removed from
+     Confluence but still mapped are flagged for removal).
 
-The workflow then opens a PR if any tracked file changed.
+The workflow then regenerates the PDFs (monitor/render_pdfs.py) and opens a PR
+if any tracked file changed.
+
+Safety: if a provider page parses to zero types, or shrinks by more than
+SYNC_MAX_SHRINK_PCT (default 20%), the run aborts without writing anything -
+that almost always means the Confluence page was restructured, not that
+coverage was dropped. Set SYNC_ALLOW_SHRINK=1 to accept a real large removal.
 
 Dependency-free (Python 3 standard library only) so it runs on a bare runner.
 
-Auth: env vars
-  CONFLUENCE_EMAIL      Atlassian account email
-  CONFLUENCE_API_TOKEN  Atlassian API token (id.atlassian.com)
-  CONFLUENCE_BASE_URL   optional, defaults to https://infralight1.atlassian.net
+Env vars
+  CONFLUENCE_EMAIL        Atlassian account email
+  CONFLUENCE_API_TOKEN    Atlassian API token (id.atlassian.com)
+  CONFLUENCE_BASE_URL     optional, defaults to https://infralight1.atlassian.net
+  SYNC_COMPARE_BASELINE   optional path of the baseline to diff against for the
+                          report (the workflow passes main's copy, so the PR
+                          description always shows the full delta vs main)
+  SYNC_MAX_SHRINK_PCT     optional, default 20
+  SYNC_ALLOW_SHRINK       optional, "1" disables the shrink guard
 """
 
 import base64
@@ -99,11 +111,31 @@ def parse_types(storage_html):
     return {ln.strip() for ln in text.splitlines() if TYPE_RE.match(ln.strip())}
 
 
-def load_baseline():
-    if not os.path.exists(BASELINE_PATH):
+def load_baseline(path=BASELINE_PATH):
+    if not os.path.exists(path):
         return {"providers": {}}
-    with open(BASELINE_PATH) as f:
+    with open(path) as f:
         return json.load(f)
+
+
+def check_shrink(old, live):
+    """Abort before writing anything if a page looks broken rather than changed."""
+    allow = os.environ.get("SYNC_ALLOW_SHRINK") == "1"
+    max_pct = float(os.environ.get("SYNC_MAX_SHRINK_PCT", "20"))
+    problems = []
+    for key, info in PROVIDERS.items():
+        lc = len(live[key][1])
+        bc = len(old.get(key, {}).get("types", []))
+        if lc == 0:   # never legitimate, even with SYNC_ALLOW_SHRINK
+            problems.append(f"{info['label']}: parsed 0 types from page {info['page_id']}")
+        elif not allow and bc and (bc - lc) * 100.0 / bc > max_pct:
+            problems.append(f"{info['label']}: {bc} -> {lc} types "
+                            f"(-{(bc - lc) * 100.0 / bc:.0f}%, limit {max_pct:.0f}%)")
+    if problems:
+        sys.exit("ERROR: refusing to sync - supported-type lists shrank suspiciously:\n  "
+                 + "\n  ".join(problems)
+                 + "\nThe Confluence page format probably changed. If the removal is real, "
+                   "re-run with SYNC_ALLOW_SHRINK=1 (workflow input 'allow_shrink').")
 
 
 def script_mapped_types(rel_path):
@@ -140,8 +172,9 @@ def write_lists_and_baseline(live):
 
 
 def main():
-    old = load_baseline().get("providers", {})
+    old = load_baseline(os.environ.get("SYNC_COMPARE_BASELINE") or BASELINE_PATH).get("providers", {})
     live = {key: fetch_page(info["page_id"]) for key, info in PROVIDERS.items()}
+    check_shrink(old, live)
 
     any_change = False
     sections = []
@@ -170,16 +203,23 @@ def main():
             lines.append(f"**Removed ({len(removed)}):**")
             lines += [f"- `{t}`" for t in removed]
             lines.append("")
-        # Which newly-added types are not yet countable by the asset-count script?
         mapped = script_mapped_types(info["script"])
+        # Newly-added types the asset-count script cannot count yet.
         unmapped_new = [t for t in added if t not in mapped]
         if unmapped_new:
             lines.append(f"**⚠ Script follow-up — not yet mapped in `{info['script']}`:**")
-            lines += [f"- `{t}`  (add its cloud-native inventory type to the MAP if it has one)"
+            lines += [f"- [ ] `{t}`  (add its cloud-native inventory type to the MAP if it has one)"
                       for t in unmapped_new]
             lines.append("")
-        lines.append(f"**PDF follow-up:** regenerate `pdfs/Firefly-Supported-"
-                     f"{info['label']}-Resource-Types.pdf` (now {lc} types).")
+        # Removed types the script would still count (overstating the total).
+        still_mapped = [t for t in removed if t in mapped]
+        if still_mapped:
+            lines.append(f"**⚠ Script follow-up — no longer supported but still mapped in "
+                         f"`{info['script']}` (remove from the MAP):**")
+            lines += [f"- [ ] `{t}`" for t in still_mapped]
+            lines.append("")
+        lines.append(f"**PDF:** `pdfs/Firefly-Supported-{info['label']}-Resource-Types.pdf` "
+                     f"regenerated automatically ({lc} types).")
         lines.append("")
         sections.append("\n".join(lines))
 
@@ -187,11 +227,13 @@ def main():
 
     if any_change:
         body = ("Provider coverage changed on Confluence. This PR updates the "
-                "machine-readable lists (`supported-types/`) and the baseline "
-                "(`monitor/providers.baseline.json`) automatically.\n\n"
-                "**Manual follow-ups** (the job cannot do these safely): add any "
-                "flagged mappings to the asset-count scripts, and regenerate the "
-                "affected PDFs via Claude Design.\n\n---\n\n" + "\n".join(sections))
+                "machine-readable lists (`supported-types/`), the baseline "
+                "(`monitor/providers.baseline.json`) and the client PDFs (`pdfs/`) "
+                "automatically.\n\n"
+                "**Manual follow-up** (the job cannot do this safely): update the "
+                "asset-count script MAPs for any types flagged below. Commit those "
+                "straight to this branch — later sync runs build on top of it "
+                "instead of overwriting it.\n\n---\n\n" + "\n".join(sections))
     else:
         body = "No changes across the AWS / Azure / GCP provider pages.\n\n" + "\n".join(sections)
 

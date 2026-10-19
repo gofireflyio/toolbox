@@ -9,7 +9,7 @@ Engineering Knowledge Hub (Confluence, space `SEKH`).
 
 ```
 provider-asset-support/
-├── pdfs/                         Client-ready one-pagers of supported types (per cloud)
+├── pdfs/                         Client-ready lists of supported types (per cloud, auto-generated)
 │   ├── Firefly-Supported-AWS-Resource-Types.pdf
 │   ├── Firefly-Supported-Azure-Resource-Types.pdf
 │   └── Firefly-Supported-GCP-Resource-Types.pdf
@@ -20,7 +20,8 @@ provider-asset-support/
 ├── supported-types/              Machine-readable supported-type lists (auto-synced from Confluence)
 │   ├── aws.txt   ├── azure.txt   └── gcp.txt
 └── monitor/                      Automation that keeps the above in sync
-    ├── check_provider_pages.py
+    ├── check_provider_pages.py   Confluence -> supported-types/ + baseline + PR report
+    ├── render_pdfs.py            baseline -> pdfs/ (deterministic, needs reportlab)
     └── providers.baseline.json
 ```
 
@@ -57,21 +58,26 @@ The supported-type lists grow as Firefly increases coverage. A GitHub Action
 (`.github/workflows/sync-provider-support.yml`) keeps this folder in step:
 
 - **Every 2 weeks** (1st & 15th, 08:00 UTC — also runnable on demand from the Actions tab)
-  it reads the three Confluence pages and rewrites `supported-types/*.txt` and
-  `monitor/providers.baseline.json`.
+  it reads the three Confluence pages, rewrites `supported-types/*.txt` and
+  `monitor/providers.baseline.json`, and **regenerates the three PDFs** from those lists.
 - If anything changed it **opens/updates a PR** (assigned to `@glengol`) whose description
-  lists the added/removed types and a checklist of manual follow-ups. If nothing changed,
-  it does nothing — no PR.
+  lists the added/removed types vs `main` and a checklist of script follow-ups. If nothing
+  changed, it does nothing — no PR.
+- If a sync PR is already open, the next run **builds on top of that branch** (no
+  force-push), so anything you commit to it is kept, and the PR description is refreshed.
+- **Safety guard:** if a provider page parses to 0 types or shrinks by more than 20%, the
+  run fails without touching anything — that usually means the Confluence page format
+  changed. If a large removal is real, re-run it from the Actions tab with **allow_shrink**.
 
-Two things the job intentionally does **not** auto-edit, because they need a human:
+One thing the job intentionally does **not** auto-edit: **script mappings**. A newly
+supported type only becomes countable once its cloud-native inventory type (e.g.
+`microsoft.compute/virtualmachines`) is added to the relevant script's `MAP` — Confluence
+only lists Terraform names, so that mapping needs a human. The PR flags exactly which new
+types are missing a mapping, and which removed types are still mapped (and would be
+over-counted). Commit those fixes to the PR branch, then merge.
 
-1. **Script mappings** — a newly supported type only becomes countable once its
-   cloud-native inventory type (e.g. `microsoft.compute/virtualmachines`) is added to the
-   relevant script's `MAP`. The PR flags exactly which new types are missing a mapping.
-2. **PDFs** — regenerated via Claude Design using the Firefly brand system. The PR flags
-   which ones are now out of date.
-
-After you add mappings / regenerate PDFs, merging the PR makes the new baseline current.
+Note: the asset-count scripts do **not** read `supported-types/*.txt`; their `MAP` is the
+list of what they count. The `.txt` lists feed the PDFs and the PR report.
 
 ### Setup (one-time)
 
@@ -88,9 +94,11 @@ The workflow needs two repository secrets (Settings → Secrets and variables �
 Also enable **Settings → Actions → General → Workflow permissions →
 "Allow GitHub Actions to create and approve pull requests"** so the job can open the PR.
 
-To refresh the lists locally (e.g. to seed or test):
+To refresh the lists and PDFs locally (e.g. to seed or test):
 
 ```bash
+pip install reportlab==4.2.5
 CONFLUENCE_EMAIL=you@firefly.ai CONFLUENCE_API_TOKEN=xxxx \
   python3 monitor/check_provider_pages.py
+python3 monitor/render_pdfs.py
 ```
