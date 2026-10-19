@@ -21,7 +21,8 @@ provider-asset-support/
 │   ├── aws.txt   ├── azure.txt   └── gcp.txt
 └── monitor/                      Automation that keeps the above in sync
     ├── check_provider_pages.py   Confluence -> supported-types/ + baseline + PR report
-    ├── render_pdfs.py            baseline -> pdfs/ (deterministic, needs reportlab)
+    ├── render_pdfs.py            baseline -> branded pdfs/ (deterministic, needs reportlab)
+    ├── assets/                   Firefly logos used by the PDFs
     └── providers.baseline.json
 ```
 
