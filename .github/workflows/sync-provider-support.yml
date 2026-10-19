@@ -103,5 +103,5 @@ jobs:
               --base main --head "$BRANCH" \
               --title "chore: sync supported provider resource types" \
               --body-file "$PAS/monitor/report.md" \
-              --assignee glengol
+              --assignee LioriFR23
           fi
