@@ -98,7 +98,7 @@ Also enable **Settings → Actions → General → Workflow permissions →
 To refresh the lists and PDFs locally (e.g. to seed or test):
 
 ```bash
-pip install reportlab==4.2.5
+pip install reportlab==4.2.5 pillow==13.0.0
 CONFLUENCE_EMAIL=you@firefly.ai CONFLUENCE_API_TOKEN=xxxx \
   python3 monitor/check_provider_pages.py
 python3 monitor/render_pdfs.py

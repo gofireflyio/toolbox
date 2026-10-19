@@ -43,7 +43,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install PDF renderer
-        run: pip install reportlab==4.2.5
+        run: pip install reportlab==4.2.5 pillow==13.0.0
 
       - name: Check out the open sync PR branch, if any
         id: branch
