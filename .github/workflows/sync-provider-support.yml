@@ -2,56 +2,106 @@ name: Sync provider support lists
 
 # Keeps provider-asset-support/ in step with the Confluence source pages.
 # Runs on the 1st and 15th of each month (~every 2 weeks) and can be run
-# on demand. When the supported-type lists change, it opens/updates a PR.
+# on demand. When the supported-type lists change, it regenerates the client
+# PDFs and opens/updates a PR.
+#
+# If a sync PR is already open, the job builds on top of its branch (no
+# force-push), so mapping fixes committed to that branch are never lost.
 
 on:
   schedule:
     - cron: "0 8 1,15 * *"   # 08:00 UTC on the 1st and 15th
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      allow_shrink:
+        description: "Accept a provider list shrinking by more than 20% (only if the removal is real)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   pull-requests: write
+
+concurrency:
+  group: provider-support-sync
+  cancel-in-progress: false
+
+env:
+  BRANCH: chore/provider-support-sync
+  PAS: provider-asset-support
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Refresh supported-type lists from Confluence
-        env:
-          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
-          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
-        run: python3 provider-asset-support/monitor/check_provider_pages.py
+      - name: Install PDF renderer
+        run: pip install reportlab==4.2.5
 
-      - name: Open or update PR if the lists changed
+      - name: Check out the open sync PR branch, if any
+        id: branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TRACKED="provider-asset-support/supported-types provider-asset-support/monitor/providers.baseline.json"
-          if [ -z "$(git status --porcelain -- $TRACKED)" ]; then
-            echo "No changes to supported-type lists. Nothing to do."
-            exit 0
-          fi
-          BRANCH="chore/provider-support-sync"
           git config user.name  "firefly-toolbox-bot"
           git config user.email "toolbox-bot@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git add $TRACKED
-          git commit -m "chore: sync supported provider resource types from Confluence"
-          git push -f origin "$BRANCH"
-          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
-            echo "PR already open for $BRANCH; the force-push updated it."
+          # Diff the report against main, so the PR body always shows the full delta.
+          git show "origin/main:$PAS/monitor/providers.baseline.json" > "$RUNNER_TEMP/main-baseline.json"
+          PR=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            echo "Open sync PR #$PR found; building on top of $BRANCH."
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            # Pick up anything merged to main since the PR was opened.
+            git merge --no-edit origin/main
           else
+            git checkout -B "$BRANCH" origin/main
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh supported-type lists from Confluence
+        env:
+          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          SYNC_COMPARE_BASELINE: ${{ runner.temp }}/main-baseline.json
+          SYNC_ALLOW_SHRINK: ${{ inputs.allow_shrink && '1' || '0' }}
+        run: python3 "$PAS/monitor/check_provider_pages.py"
+
+      - name: Regenerate client PDFs
+        run: python3 "$PAS/monitor/render_pdfs.py"
+
+      - name: Commit and open/update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.branch.outputs.pr }}
+        run: |
+          set -euo pipefail
+          TRACKED="$PAS/supported-types $PAS/monitor/providers.baseline.json $PAS/pdfs"
+          if [ -n "$(git status --porcelain -- $TRACKED)" ]; then
+            git add $TRACKED
+            git commit -m "chore: sync supported provider resource types from Confluence"
+          fi
+          if git diff --quiet origin/main -- $TRACKED; then
+            echo "Supported-type lists and PDFs match main. Nothing to do."
+            exit 0
+          fi
+          if [ -n "$PR" ]; then
+            git push origin "$BRANCH"
+            gh pr edit "$PR" --body-file "$PAS/monitor/report.md"
+            echo "Updated PR #$PR."
+          else
+            # No open PR, so nothing on this branch is worth keeping.
+            git push -f origin "$BRANCH"
             gh pr create \
               --base main --head "$BRANCH" \
               --title "chore: sync supported provider resource types" \
-              --body-file provider-asset-support/monitor/report.md \
+              --body-file "$PAS/monitor/report.md" \
               --assignee glengol
           fi
