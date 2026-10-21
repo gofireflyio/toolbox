@@ -30,8 +30,17 @@ provider-asset-support/
 
 Each script is **read-only** — it only calls list/describe/query APIs — and prints a
 per-type breakdown, a grand total, and a CSV. The total is a **lower bound**: it counts
-only resource types the cloud's native inventory service exposes as discrete objects, so
-child/config sub-resources Firefly also codifies are not separately counted.
+only resource types the cloud's native inventory service exposes, so data-plane objects
+and some child/config sub-resources Firefly also codifies are not counted.
+
+The Azure script also queries the `AuthorizationResources`, `PolicyResources`,
+`RecoveryServicesResources` and `DnsResources` tables (role assignments, policy
+assignments/exemptions/definitions, Azure Backup items, private DNS records), counts
+child config embedded in parent resources (subnets, NSG rules, LB rules/probes/pools,
+VNet peerings, Key Vault access policies, ...), and splits Linux/Windows VMs and
+VMSS, web/function/Logic App Standard apps and AI Foundry hubs/projects. It prints how
+many of the supported types it can count; `-v` lists the ones Resource Graph does not
+expose (kept in the script's `NOT_COUNTABLE` list).
 
 | Cloud | Data source | Prereqs | Scope |
 |-------|-------------|---------|-------|
@@ -75,7 +84,9 @@ supported type only becomes countable once its cloud-native inventory type (e.g.
 `microsoft.compute/virtualmachines`) is added to the relevant script's `MAP` — Confluence
 only lists Terraform names, so that mapping needs a human. The PR flags exactly which new
 types are missing a mapping, and which removed types are still mapped (and would be
-over-counted). Commit those fixes to the PR branch, then merge.
+over-counted). Commit those fixes to the PR branch, then merge. For Azure, a new type
+that Resource Graph cannot see goes in the script's `NOT_COUNTABLE` list instead, so it
+is not flagged again.
 
 Note: the asset-count scripts do **not** read `supported-types/*.txt`; their `MAP` is the
 list of what they count. The `.txt` lists feed the PDFs and the PR report.
