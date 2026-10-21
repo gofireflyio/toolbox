@@ -38,9 +38,17 @@ The Azure script also queries the `AuthorizationResources`, `PolicyResources`,
 assignments/exemptions/definitions, Azure Backup items, private DNS records), counts
 child config embedded in parent resources (subnets, NSG rules, LB rules/probes/pools,
 VNet peerings, Key Vault access policies, ...), and splits Linux/Windows VMs and
-VMSS, web/function/Logic App Standard apps and AI Foundry hubs/projects. It prints how
-many of the supported types it can count; `-v` lists the ones Resource Graph does not
-expose (kept in the script's `NOT_COUNTABLE` list).
+VMSS, web/function/Logic App Standard apps and AI Foundry hubs/projects.
+
+The GCP script also lists asset types the search API does not return (`gcloud asset
+list`), counts project and bucket IAM members and Cloud Function IAM policies
+(`gcloud asset search-all-iam-policies`, covered by `roles/cloudasset.viewer`), and
+splits regional vs global/zonal compute resources by location.
+
+Every script prints how many of the supported types it can count. Types the inventory
+service records under another type's row are in `COUNTED_AS_OTHER` (AWS, GCP), and
+types it does not expose at all are in `NOT_COUNTABLE`; `-v` lists the latter. Every
+supported type is in the script's `MAP`, `COUNTED_AS_OTHER` or `NOT_COUNTABLE`.
 
 | Cloud | Data source | Prereqs | Scope |
 |-------|-------------|---------|-------|
@@ -84,9 +92,9 @@ supported type only becomes countable once its cloud-native inventory type (e.g.
 `microsoft.compute/virtualmachines`) is added to the relevant script's `MAP` — Confluence
 only lists Terraform names, so that mapping needs a human. The PR flags exactly which new
 types are missing a mapping, and which removed types are still mapped (and would be
-over-counted). Commit those fixes to the PR branch, then merge. For Azure, a new type
-that Resource Graph cannot see goes in the script's `NOT_COUNTABLE` list instead, so it
-is not flagged again.
+over-counted). Commit those fixes to the PR branch, then merge. A new type the inventory
+service cannot see goes in the script's `NOT_COUNTABLE` list instead, so it is not
+flagged again.
 
 Note: the asset-count scripts do **not** read `supported-types/*.txt`; their `MAP` is the
 list of what they count. The `.txt` lists feed the PDFs and the PR report.
