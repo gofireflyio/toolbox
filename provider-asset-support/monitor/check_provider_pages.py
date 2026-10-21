@@ -208,7 +208,7 @@ def main():
         unmapped_new = [t for t in added if t not in mapped]
         if unmapped_new:
             lines.append(f"**⚠ Script follow-up — not yet mapped in `{info['script']}`:**")
-            lines += [f"- [ ] `{t}`  (add its cloud-native inventory type to the MAP if it has one)"
+            lines += [f"- [ ] `{t}`  (add its cloud-native inventory type to the MAP, or to NOT_COUNTABLE if the inventory service cannot see it)"
                       for t in unmapped_new]
             lines.append("")
         # Removed types the script would still count (overstating the total).
