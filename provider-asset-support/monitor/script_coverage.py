@@ -63,10 +63,14 @@ PROVIDERS = {
               "source": "Cloud Asset Inventory supported asset types"},
 }
 
+# Each provider's official type list is the union of these sources. For AWS
+# the documentation lists far more recorded types than the API's ResourceType
+# enum (which lags behind), so both are used.
 OFFICIAL_URLS = {
-    "aws": "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/config/2014-11-12/service-2.json",
-    "azure": "https://raw.githubusercontent.com/MicrosoftDocs/azure-docs/main/articles/governance/resource-graph/reference/supported-tables-resources.md",
-    "gcp": "https://cloud.google.com/asset-inventory/docs/supported-asset-types",
+    "aws": ["https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/config/2014-11-12/service-2.json",
+            "https://docs.aws.amazon.com/config/latest/developerguide/resource-config-reference.html"],
+    "azure": ["https://raw.githubusercontent.com/MicrosoftDocs/azure-docs/main/articles/governance/resource-graph/reference/supported-tables-resources.md"],
+    "gcp": ["https://cloud.google.com/asset-inventory/docs/supported-asset-types"],
 }
 
 # MAP keys that are valid although the official list omits them. Keep the
@@ -114,6 +118,19 @@ def remove_entries(text, name, drop_indexes):
     return text[:span[0]] + "".join(out) + text[span[1]:]
 
 
+def stray_entries(text):
+    """Line numbers of bare '"..."' lines that are not inside a NAME=( ... ) array."""
+    stray, inside = [], False
+    for n, line in enumerate(text.splitlines(), 1):
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\($", line):
+            inside = True
+        elif inside and line.startswith(")"):
+            inside = False
+        elif not inside and re.match(r'^\s*"[^"]*"\s*$', line):
+            stray.append(n)
+    return stray
+
+
 def supported_types(key):
     path = os.path.join(ROOT, "supported-types", f"{key}.txt")
     prefix = PROVIDERS[key]["prefix"]
@@ -137,7 +154,9 @@ def fetch(url, attempts=3):
 
 def parse_official(key, raw):
     if key == "aws":
-        return set(json.loads(raw)["shapes"]["ResourceType"]["enum"])
+        if raw.lstrip().startswith("{"):
+            return set(json.loads(raw)["shapes"]["ResourceType"]["enum"])
+        return set(re.findall(r"AWS::[A-Za-z0-9]+::[A-Za-z0-9]+", raw))
     if key == "azure":
         # Lines look like "- microsoft.Compute/disks (Disks)" or "- microsoft.x/y".
         return {t.lower() for t in re.findall(r"^- ([A-Za-z0-9.]+/[A-Za-z0-9./]+)\b", raw, re.M)}
@@ -151,11 +170,12 @@ def official_types(key, cache_dir):
     if cache and os.path.exists(cache):
         with open(cache) as f:
             return {l.strip() for l in f if l.strip()}
-    try:
-        types = parse_official(key, fetch(OFFICIAL_URLS[key]))
-    except Exception as e:  # network/format problems must not break the sync
-        print(f"warning: could not load the official {key} type list: {e}", file=sys.stderr)
-        return None
+    types = set()
+    for url in OFFICIAL_URLS[key]:
+        try:
+            types |= parse_official(key, fetch(url))
+        except Exception as e:  # network/format problems must not break the sync
+            print(f"warning: could not load {url}: {e}", file=sys.stderr)
     if len(types) < 50:  # a page format change, not a real list
         print(f"warning: official {key} type list parsed to {len(types)} types; ignoring",
               file=sys.stderr)
@@ -186,6 +206,10 @@ def analyse(key, cache_dir, fix):
         text = f.read()
     supported = supported_types(key)
 
+    stray = stray_entries(text)
+    if stray:
+        sys.exit(f"{info['script']}: quoted entries outside any array (lines {stray}); "
+                 "they would run as commands")
     keys, vals = array_entries(text, "MAP_KEYS"), array_entries(text, "MAP_VALS")
     if len(keys) != len(vals):
         sys.exit(f"{info['script']}: MAP_KEYS ({len(keys)}) and MAP_VALS ({len(vals)}) differ in length")
