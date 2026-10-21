@@ -87,14 +87,19 @@ The supported-type lists grow as Firefly increases coverage. A GitHub Action
   run fails without touching anything — that usually means the Confluence page format
   changed. If a large removal is real, re-run it from the Actions tab with **allow_shrink**.
 
-One thing the job intentionally does **not** auto-edit: **script mappings**. A newly
-supported type only becomes countable once its cloud-native inventory type (e.g.
-`microsoft.compute/virtualmachines`) is added to the relevant script's `MAP` — Confluence
-only lists Terraform names, so that mapping needs a human. The PR flags exactly which new
-types are missing a mapping, and which removed types are still mapped (and would be
-over-counted). Commit those fixes to the PR branch, then merge. A new type the inventory
-service cannot see goes in the script's `NOT_COUNTABLE` list instead, so it is not
-flagged again.
+- It also **updates the asset-count scripts** (`monitor/script_coverage.py`):
+  - Types removed from Confluence are removed from the scripts automatically.
+  - New types need their cloud-native inventory type (e.g.
+    `microsoft.compute/virtualmachines`), which Confluence does not give. If the
+    `ANTHROPIC_API_KEY` secret is set, a Claude step looks each one up in the cloud's
+    official type list (AWS Config `ResourceType` enum, Azure Resource Graph type
+    reference, Cloud Asset Inventory supported types) and adds it to the script's
+    `MAP`, `COUNTED_AS_OTHER` or `NOT_COUNTABLE`.
+  - The edit is kept only if every script still passes `bash -n` and every new `MAP`
+    key is on the official list; otherwise it is reverted.
+  - Anything still unclassified, and any `MAP` key that is not an official type, is
+    listed under **Asset-count script coverage** in the PR. Review the `scripts/` diff
+    before merging.
 
 Note: the asset-count scripts do **not** read `supported-types/*.txt`; their `MAP` is the
 list of what they count. The `.txt` lists feed the PDFs and the PR report.
@@ -107,6 +112,7 @@ The workflow needs two repository secrets (Settings → Secrets and variables �
 |--------|-------|
 | `CONFLUENCE_EMAIL`     | an Atlassian account email with read access to space `SEKH` |
 | `CONFLUENCE_API_TOKEN` | an API token for that account (id.atlassian.com → API tokens) |
+| `ANTHROPIC_API_KEY`    | optional: lets the job classify new types in the scripts (without it they stay on the PR checklist) |
 
 > Repository secrets are encrypted and are **never** exposed to forks, PRs, or logs —
 > safe to set even though this repo is public.
@@ -121,4 +127,5 @@ pip install reportlab==4.2.5 pillow==13.0.0
 CONFLUENCE_EMAIL=you@firefly.ai CONFLUENCE_API_TOKEN=xxxx \
   python3 monitor/check_provider_pages.py
 python3 monitor/render_pdfs.py
+python3 monitor/script_coverage.py --check   # every supported type classified in its script?
 ```
