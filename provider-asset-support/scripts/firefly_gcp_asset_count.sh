@@ -308,7 +308,6 @@ esac
 # from both calls the larger count is kept, so nothing is counted twice.
 LIST_TYPES="cloudresourcemanager.googleapis.com/Project,container.googleapis.com/NodePool,dns.googleapis.com/ResourceRecordSet,apigee.googleapis.com/Environment,apigee.googleapis.com/ApiProxy,iam.googleapis.com/WorkloadIdentityPool,file.googleapis.com/Snapshot,orgpolicy.googleapis.com/Policy"
 
-echo "Querying Cloud Asset Inventory for $SCOPE (this can take a minute)..."
 
 # 1) Resource search: one line per resource -> "assetType<TAB>location".
 #    Regional compute resources share an asset type with their global/zonal

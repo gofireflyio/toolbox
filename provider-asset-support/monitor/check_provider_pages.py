@@ -16,14 +16,11 @@ biweekly GitHub Action, this script:
      deterministic (sorted, no timestamps) so `git` is the source of truth for
      "did anything change".
   3. Writes monitor/report.md describing what changed since the committed
-     baseline, plus a checklist of which asset-count script mappings need a
-     human follow-up (new supported types that are not yet mapped in a script
-     cannot be auto-added, because the mapping needs the cloud-native inventory
-     type, which the Confluence list does not provide; types removed from
-     Confluence but still mapped are flagged for removal).
+     baseline.
 
-The workflow then regenerates the PDFs (monitor/render_pdfs.py) and opens a PR
-if any tracked file changed.
+The workflow then updates the asset-count scripts (monitor/script_coverage.py,
+which appends its own coverage section to the report), regenerates the PDFs
+(monitor/render_pdfs.py) and opens a PR if any tracked file changed.
 
 Safety: if a provider page parses to zero types, or shrinks by more than
 SYNC_MAX_SHRINK_PCT (default 20%), the run aborts without writing anything -
@@ -71,8 +68,6 @@ REPORT_PATH = os.path.join(MONITOR_DIR, "report.md")
 
 # A supported resource type looks like aws_*, azurerm_*, or google_*.
 TYPE_RE = re.compile(r"^(?:aws|azurerm|google)_[a-z0-9_]+$")
-# Terraform types referenced on the right-hand side of a script's MAP.
-SCRIPT_MAP_RE = re.compile(r'"((?:aws|azurerm|google)_[a-z0-9_]+)"')
 
 
 def _auth_header():
@@ -138,15 +133,6 @@ def check_shrink(old, live):
                    "re-run with SYNC_ALLOW_SHRINK=1 (workflow input 'allow_shrink').")
 
 
-def script_mapped_types(rel_path):
-    """Terraform types already handled by an asset-count script's MAP."""
-    path = os.path.join(ROOT, rel_path)
-    if not os.path.exists(path):
-        return set()
-    with open(path) as f:
-        return set(SCRIPT_MAP_RE.findall(f.read()))
-
-
 def write_lists_and_baseline(live):
     """Rewrite supported-types/*.txt and providers.baseline.json deterministically."""
     os.makedirs(LISTS_DIR, exist_ok=True)
@@ -203,21 +189,6 @@ def main():
             lines.append(f"**Removed ({len(removed)}):**")
             lines += [f"- `{t}`" for t in removed]
             lines.append("")
-        mapped = script_mapped_types(info["script"])
-        # Newly-added types the asset-count script cannot count yet.
-        unmapped_new = [t for t in added if t not in mapped]
-        if unmapped_new:
-            lines.append(f"**⚠ Script follow-up — not yet mapped in `{info['script']}`:**")
-            lines += [f"- [ ] `{t}`  (add its cloud-native inventory type to the MAP, or to NOT_COUNTABLE if the inventory service cannot see it)"
-                      for t in unmapped_new]
-            lines.append("")
-        # Removed types the script would still count (overstating the total).
-        still_mapped = [t for t in removed if t in mapped]
-        if still_mapped:
-            lines.append(f"**⚠ Script follow-up — no longer supported but still mapped in "
-                         f"`{info['script']}` (remove from the MAP):**")
-            lines += [f"- [ ] `{t}`" for t in still_mapped]
-            lines.append("")
         lines.append(f"**PDF:** `pdfs/Firefly-Supported-{info['label']}-Resource-Types.pdf` "
                      f"regenerated automatically ({lc} types).")
         lines.append("")
@@ -230,10 +201,13 @@ def main():
                 "machine-readable lists (`supported-types/`), the baseline "
                 "(`monitor/providers.baseline.json`) and the client PDFs (`pdfs/`) "
                 "automatically.\n\n"
-                "**Manual follow-up** (the job cannot do this safely): update the "
-                "asset-count script MAPs for any types flagged below. Commit those "
-                "straight to this branch — later sync runs build on top of it "
-                "instead of overwriting it.\n\n---\n\n" + "\n".join(sections))
+                "**Asset-count scripts:** types no longer supported are removed from "
+                "the scripts automatically, and new types are classified by Claude "
+                "when the `ANTHROPIC_API_KEY` secret is set. Review the `scripts/` "
+                "diff; anything still unclassified is listed under *Asset-count "
+                "script coverage* at the end. Fixes can be committed straight to "
+                "this branch; later sync runs build on top of it.\n\n---\n\n"
+                + "\n".join(sections))
     else:
         body = "No changes across the AWS / Azure / GCP provider pages.\n\n" + "\n".join(sections)
 

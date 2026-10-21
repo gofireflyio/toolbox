@@ -2,8 +2,10 @@ name: Sync provider support lists
 
 # Keeps provider-asset-support/ in step with the Confluence source pages.
 # Runs on the 1st and 15th of each month (~every 2 weeks) and can be run
-# on demand. When the supported-type lists change, it regenerates the client
-# PDFs and opens/updates a PR.
+# on demand. When the supported-type lists change, it updates the asset-count
+# scripts (removals automatically; new types classified by Claude when the
+# ANTHROPIC_API_KEY secret is set), regenerates the client PDFs and
+# opens/updates a PR.
 #
 # If a sync PR is already open, the job builds on top of its branch (no
 # force-push), so mapping fixes committed to that branch are never lost.
@@ -29,10 +31,13 @@ concurrency:
 env:
   BRANCH: chore/provider-support-sync
   PAS: provider-asset-support
+  OFFICIAL: provider-asset-support/monitor/.official
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,6 +79,93 @@ jobs:
           SYNC_ALLOW_SHRINK: ${{ inputs.allow_shrink && '1' || '0' }}
         run: python3 "$PAS/monitor/check_provider_pages.py"
 
+      # Removes no-longer-supported types from the scripts (deterministic) and
+      # lists supported types the scripts do not classify yet.
+      - name: Update asset-count scripts
+        id: coverage
+        run: |
+          set -euo pipefail
+          python3 "$PAS/monitor/script_coverage.py" --fix --official-dir "$OFFICIAL" \
+            --json "$RUNNER_TEMP/coverage-before.json" > /dev/null
+          n=$(python3 -c 'import json,sys; print(sum(len(v["unclassified"]) for v in json.load(open(sys.argv[1])).values()))' \
+                "$RUNNER_TEMP/coverage-before.json")
+          echo "unclassified=$n" >> "$GITHUB_OUTPUT"
+          echo "$n supported type(s) not yet classified in the scripts."
+          cp -R "$PAS/scripts" "$RUNNER_TEMP/scripts-before"
+
+      # New types need their cloud-native inventory type, which Confluence does
+      # not provide. Claude looks it up in the official type lists and edits the
+      # scripts; the next step rejects the edit unless it validates.
+      - name: Classify new types with Claude
+        if: steps.coverage.outputs.unclassified != '0' && env.HAS_ANTHROPIC_KEY == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          claude_args: >-
+            --max-turns 80
+            --allowedTools "Read,Edit,Grep,Glob,Bash(python3 provider-asset-support/monitor/script_coverage.py:*),Bash(bash -n:*)"
+          prompt: |
+            You maintain the read-only asset-count scripts in provider-asset-support/scripts/
+            (firefly_aws_asset_count.sh = AWS Config, firefly_azure_asset_count.sh = Azure
+            Resource Graph, firefly_gcp_asset_count.sh = Cloud Asset Inventory).
+
+            Some Firefly-supported Terraform types are not classified in their script yet.
+            List them with:
+              python3 provider-asset-support/monitor/script_coverage.py --official-dir provider-asset-support/monitor/.official
+
+            For EACH unclassified type, edit its script so the type lands in exactly one of:
+            1. MAP_KEYS / MAP_VALS - when the inventory service exposes it. Add the key and the
+               Terraform type at the SAME position in both arrays, inside the matching
+               commented group. The key MUST appear in the official list for that cloud:
+               provider-asset-support/monitor/.official/<aws|azure|gcp>.txt (Azure keys are
+               lowercase). Follow the conventions already in the script: Azure '#variant' or
+               '#embedded' keys need a matching change to the Resource Graph queries; GCP
+               regional variants use the '#regional' suffix that the awk classifier sets.
+               Only use an existing suffix mechanism or a plain official type.
+            2. COUNTED_AS_OTHER - only where it exists (AWS, GCP): the service records it under
+               a native type that is already mapped to another Terraform type.
+            3. NOT_COUNTABLE - the service does not expose it, or you are not sure. When in
+               doubt, choose NOT_COUNTABLE: an overcount is worse than an undercount.
+
+            Do not change anything else: no other mappings, queries, output or comments
+            beyond what the new types need. Keep Bash 3.2 compatibility.
+
+            Before finishing, run 'bash -n' on every script you edited and re-run the
+            script_coverage.py command above; it must report 0 unclassified types and no
+            MAP keys outside the official lists.
+
+      - name: Validate asset-count scripts
+        if: steps.coverage.outputs.unclassified != '0'
+        run: |
+          set -uo pipefail
+          ok=1
+          for f in "$PAS"/scripts/*.sh; do bash -n "$f" || ok=0; done
+          python3 "$PAS/monitor/script_coverage.py" --official-dir "$OFFICIAL" \
+            --json "$RUNNER_TEMP/coverage-after.json" > /dev/null || ok=0
+          if [ "$ok" = 1 ]; then
+            # Reject edits that add MAP keys outside the official type lists.
+            python3 - "$RUNNER_TEMP/coverage-before.json" "$RUNNER_TEMP/coverage-after.json" <<'PY' || ok=0
+          import json, sys
+          before, after = (json.load(open(p)) for p in sys.argv[1:3])
+          new = {k: sorted(set(after[k]["dead_keys"]) - set(before[k]["dead_keys"])) for k in after}
+          bad = {k: v for k, v in new.items() if v}
+          if bad:
+              print("New MAP keys not in the official lists:", bad)
+              sys.exit(1)
+          PY
+          fi
+          if [ "$ok" = 0 ]; then
+            echo "::warning::Script edits failed validation; reverting them. New types stay on the PR checklist."
+            rm -rf "$PAS/scripts" && cp -R "$RUNNER_TEMP/scripts-before" "$PAS/scripts"
+          fi
+
+      - name: Add script coverage to the PR report
+        run: |
+          python3 "$PAS/monitor/script_coverage.py" --official-dir "$OFFICIAL" \
+            --report "$PAS/monitor/report.md" > /dev/null
+
       - name: Regenerate client PDFs
         run: python3 "$PAS/monitor/render_pdfs.py"
 
@@ -83,13 +175,13 @@ jobs:
           PR: ${{ steps.branch.outputs.pr }}
         run: |
           set -euo pipefail
-          TRACKED="$PAS/supported-types $PAS/monitor/providers.baseline.json $PAS/pdfs"
+          TRACKED="$PAS/supported-types $PAS/monitor/providers.baseline.json $PAS/pdfs $PAS/scripts"
           if [ -n "$(git status --porcelain -- $TRACKED)" ]; then
             git add $TRACKED
             git commit -m "chore: sync supported provider resource types from Confluence"
           fi
           if git diff --quiet origin/main -- $TRACKED; then
-            echo "Supported-type lists and PDFs match main. Nothing to do."
+            echo "Supported-type lists, scripts and PDFs match main. Nothing to do."
             exit 0
           fi
           if [ -n "$PR" ]; then
