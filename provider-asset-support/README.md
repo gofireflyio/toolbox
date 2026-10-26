@@ -1,27 +1,28 @@
 # Provider Asset Support
 
 Reference material and tooling for **which cloud resource types Firefly supports**,
-and for **estimating how many supported assets** a prospect/customer has in their
-cloud. Everything here derives from the canonical "Provider" pages in the Sales
-Engineering Knowledge Hub (Confluence, space `SEKH`).
+and for **estimating how many supported assets** you have in your cloud. The
+supported-type lists are generated from Firefly's provider documentation and
+refreshed every two weeks.
 
 ## Contents
 
 ```
 provider-asset-support/
-├── pdfs/                         Client-ready lists of supported types (per cloud, auto-generated)
+├── pdfs/                         Lists of supported types, one per cloud (auto-generated)
 │   ├── Firefly-Supported-AWS-Resource-Types.pdf
 │   ├── Firefly-Supported-Azure-Resource-Types.pdf
 │   └── Firefly-Supported-GCP-Resource-Types.pdf
-├── scripts/                      Read-only asset-count scripts to share with technical stakeholders
+├── scripts/                      Read-only asset-count scripts you run in your own cloud
 │   ├── firefly_aws_asset_count.sh
 │   ├── firefly_azure_asset_count.sh
 │   └── firefly_gcp_asset_count.sh
-├── supported-types/              Machine-readable supported-type lists (auto-synced from Confluence)
+├── supported-types/              Machine-readable supported-type lists (auto-synced)
 │   ├── aws.txt   ├── azure.txt   └── gcp.txt
 └── monitor/                      Automation that keeps the above in sync
-    ├── check_provider_pages.py   Confluence -> supported-types/ + baseline + PR report
+    ├── check_provider_pages.py   provider docs -> supported-types/ + baseline + PR report
     ├── render_pdfs.py            baseline -> branded pdfs/ (deterministic, needs reportlab)
+    ├── script_coverage.py        keeps each script's type lists in step with supported-types/
     ├── assets/                   Firefly logos used by the PDFs
     └── providers.baseline.json
 ```
@@ -32,6 +33,9 @@ Each script is **read-only** — it only calls list/describe/query APIs — and 
 per-type breakdown, a grand total, and a CSV. The total is a **lower bound**: it counts
 only resource types the cloud's native inventory service exposes, so data-plane objects
 and some child/config sub-resources Firefly also codifies are not counted.
+
+The scripts run entirely on your machine with your own cloud CLI credentials. They
+make no changes and send nothing to Firefly; you choose what output, if any, to share.
 
 The Azure script also queries the `AuthorizationResources`, `PolicyResources`,
 `RecoveryServicesResources` and `DnsResources` tables (role assignments, policy
@@ -76,21 +80,12 @@ The supported-type lists grow as Firefly increases coverage. A GitHub Action
 (`.github/workflows/sync-provider-support.yml`) keeps this folder in step:
 
 - **Every 2 weeks** (1st & 15th, 08:00 UTC — also runnable on demand from the Actions tab)
-  it reads the three Confluence pages, rewrites `supported-types/*.txt` and
+  it reads the three provider documentation pages, rewrites `supported-types/*.txt` and
   `monitor/providers.baseline.json`, and **regenerates the three PDFs** from those lists.
-- If anything changed it **opens/updates a PR** (assigned to `@LioriFR23`) whose description
-  lists the added/removed types vs `main` and a checklist of script follow-ups. If nothing
-  changed, it does nothing — no PR.
-- If a sync PR is already open, the next run **builds on top of that branch** (no
-  force-push), so anything you commit to it is kept, and the PR description is refreshed.
-- **Safety guard:** if a provider page parses to 0 types or shrinks by more than 20%, the
-  run fails without touching anything — that usually means the Confluence page format
-  changed. If a large removal is real, re-run it from the Actions tab with **allow_shrink**.
-
 - It also **updates the asset-count scripts** (`monitor/script_coverage.py`):
-  - Types removed from Confluence are removed from the scripts automatically.
+  - Types removed from the provider docs are removed from the scripts automatically.
   - New types need their cloud-native inventory type (e.g.
-    `microsoft.compute/virtualmachines`), which Confluence does not give. If the
+    `microsoft.compute/virtualmachines`), which the provider docs do not give. If the
     `ANTHROPIC_API_KEY` secret is set, a Claude step looks each one up in the cloud's
     official type list (AWS Config `ResourceType` enum, Azure Resource Graph type
     reference, Cloud Asset Inventory supported types) and adds it to the script's
@@ -100,17 +95,26 @@ The supported-type lists grow as Firefly increases coverage. A GitHub Action
   - Anything still unclassified, and any `MAP` key that is not an official type, is
     listed under **Asset-count script coverage** in the PR. Review the `scripts/` diff
     before merging.
+- If anything changed it **opens/updates a PR** for the maintainers whose description
+  lists the added/removed types vs `main` and a checklist of script follow-ups. If nothing
+  changed, it does nothing — no PR.
+- If a sync PR is already open, the next run **builds on top of that branch** (no
+  force-push), so anything you commit to it is kept, and the PR description is refreshed.
+- **Safety guard:** if a provider page parses to 0 types or shrinks by more than 20%, the
+  run fails without touching anything — that usually means the page format changed. If a
+  large removal is real, re-run it from the Actions tab with **allow_shrink**.
 
 Note: the asset-count scripts do **not** read `supported-types/*.txt`; their `MAP` is the
 list of what they count. The `.txt` lists feed the PDFs and the PR report.
 
 ### Setup (one-time)
 
-The workflow needs two repository secrets (Settings → Secrets and variables → Actions):
+The workflow uses these repository secrets (Settings → Secrets and variables → Actions);
+the first two are required:
 
 | Secret | Value |
 |--------|-------|
-| `CONFLUENCE_EMAIL`     | an Atlassian account email with read access to space `SEKH` |
+| `CONFLUENCE_EMAIL`     | an Atlassian account email with read access to the provider pages |
 | `CONFLUENCE_API_TOKEN` | an API token for that account (id.atlassian.com → API tokens) |
 | `ANTHROPIC_API_KEY`    | optional: lets the job classify new types in the scripts (without it they stay on the PR checklist) |
 
@@ -124,7 +128,7 @@ To refresh the lists and PDFs locally (e.g. to seed or test):
 
 ```bash
 pip install reportlab==4.2.5 pillow==13.0.0
-CONFLUENCE_EMAIL=you@firefly.ai CONFLUENCE_API_TOKEN=xxxx \
+CONFLUENCE_EMAIL=you@example.com CONFLUENCE_API_TOKEN=<token> \
   python3 monitor/check_provider_pages.py
 python3 monitor/render_pdfs.py
 python3 monitor/script_coverage.py --check   # every supported type classified in its script?
