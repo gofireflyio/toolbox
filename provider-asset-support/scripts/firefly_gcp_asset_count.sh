@@ -15,17 +15,23 @@
 #       groups results by assetType (regional vs global/zonal compute
 #       variants are told apart by location). Asset types the search API
 #       may not return are also listed with 'gcloud asset list', and IAM
-#       policy search counts project / bucket IAM members.
-#    2. Maps each CAI asset type to its Terraform resource type and keeps
+#       policy search counts project / bucket IAM members, bindings and
+#       policies.
+#    2. A few supported types Cloud Asset Inventory does not expose are read
+#       from their own APIs, once per project in scope: bucket ACL entries
+#       (gcloud storage buckets list), HMAC keys, Cloud SQL databases, and -
+#       when 'asset list' is not permitted - workload identity pools.
+#    3. Maps each CAI asset type to its Terraform resource type and keeps
 #       only the ones on Firefly's supported list.
-#    3. Prints a per-type breakdown + grand total, and writes a CSV.
+#    4. Prints a per-type breakdown + grand total, and writes a CSV.
 #
 #  REQUIREMENTS
 #    - gcloud CLI (authenticated), plus standard coreutils (sort/uniq/awk)
 #    - Cloud Asset API enabled on the scoping project:
 #        gcloud services enable cloudasset.googleapis.com
-#    - IAM: roles/cloudasset.viewer (cloudasset.assets.searchAllResources)
-#      on the chosen scope.
+#    - IAM: roles/cloudasset.viewer on the chosen scope, plus roles/viewer
+#      (or roles/iam.securityReviewer + roles/storage.legacyBucketReader) for
+#      the per-project API reads. Calls that are denied are listed at the end.
 #
 #  USAGE
 #    ./firefly_gcp_asset_count.sh -p PROJECT_ID          # single project
@@ -150,6 +156,8 @@ MAP_KEYS=(
   "orgpolicy.googleapis.com/Policy#project"
   "iam-policy/cloudresourcemanager.googleapis.com/Project#member"
   "iam-policy/storage.googleapis.com/Bucket#member"
+  "iam-policy/storage.googleapis.com/Bucket#binding"
+  "iam-policy/storage.googleapis.com/Bucket#policy"
   "iam-policy/cloudfunctions.googleapis.com/CloudFunction"
 )
 
@@ -233,22 +241,28 @@ MAP_VALS=(
   "google_project_organization_policy"
   "google_project_iam_member"
   "google_storage_bucket_iam_member"
+  "google_storage_bucket_iam_binding"
+  "google_storage_bucket_iam_policy"
   "google_cloudfunctions_function_iam_policy"
 )
 
 # Supported types counted under another type's row, because CAI does not
-# distinguish them: Google-managed SSL certificates are SslCertificate assets,
-# and bucket IAM bindings/policies are the same grants as the bucket IAM
-# members counted from IAM policy search.
+# distinguish them: Google-managed SSL certificates are SslCertificate assets.
 COUNTED_AS_OTHER=(
   "google_compute_managed_ssl_certificate"
-  "google_storage_bucket_iam_binding"
-  "google_storage_bucket_iam_policy"
 )
 
-# Supported types Cloud Asset Inventory does not expose (Apigee sub-entities,
-# Cloud Scheduler jobs, SQL databases, bucket ACLs, HMAC keys). They cannot be
-# counted here, so the total is a lower bound. Checked against the CAI
+# Supported types CAI does not expose, counted from their own read-only APIs
+# per project (see per_project_counts below).
+API_COUNTED=(
+  "google_storage_bucket_access_control"
+  "google_storage_hmac_key"
+  "google_sql_database"
+)
+
+# Supported types Cloud Asset Inventory does not expose and that have no
+# project-level list API this script calls (Apigee sub-entities live under an
+# Apigee organization; Cloud Scheduler jobs need a per-location list). Checked against the CAI
 # supported asset types list.
 NOT_COUNTABLE=(
   "google_apigee_api_deployment"
@@ -267,15 +281,18 @@ NOT_COUNTABLE=(
   "google_apigee_sharedflow_deployment"
   "google_apigee_target_server"
   "google_cloud_scheduler_job"
-  "google_sql_database"
-  "google_storage_bucket_access_control"
-  "google_storage_hmac_key"
 )
 
 # Bash 3.2 (macOS default) has no associative arrays, so MAP is stored as two
 # parallel indexed arrays and looked up by linear scan.
 map_lookup() {
   local key="$1" i
+  if [[ "$key" == api:* ]]; then          # counted from a service API
+    for i in "${API_COUNTED[@]}"; do
+      [[ "$i" == "${key#api:}" ]] && { printf '%s' "$i"; return 0; }
+    done
+    return 1
+  fi
   for i in "${!MAP_KEYS[@]}"; do
     if [[ "${MAP_KEYS[$i]}" == "$key" ]]; then
       printf '%s' "${MAP_VALS[$i]}"
@@ -378,8 +395,57 @@ if [[ $? -ne 0 ]]; then
   SKIPPED+=("IAM policy search (Cloud Function IAM policies)")
   IAM_FUNCS=""
 fi
+# One line per role binding on a bucket: bindings = lines, policies = buckets.
+IAM_BUCKET_BINDINGS=$(gcloud asset search-all-iam-policies --scope="$SCOPE" \
+                --asset-types="storage.googleapis.com/Bucket" \
+                --flatten="policy.bindings[]" \
+                --format="value(resource)" 2>"$ERR_LOG")
+if [[ $? -ne 0 ]]; then
+  SKIPPED+=("IAM policy search (bucket IAM bindings / policies)")
+  IAM_BUCKET_BINDINGS=""
+fi
 IAM_KEYS=$( { echo "$IAM_MEMBERS" | awk 'NF { print "iam-policy/" $1 "#member" }'
-              echo "$IAM_FUNCS"   | awk 'NF { print "iam-policy/" $1 }'; } )
+              echo "$IAM_FUNCS"   | awk 'NF { print "iam-policy/" $1 }'
+              echo "$IAM_BUCKET_BINDINGS" | awk 'NF { print "iam-policy/storage.googleapis.com/Bucket#binding" }'
+              echo "$IAM_BUCKET_BINDINGS" | awk 'NF' | sort -u | awk '{ print "iam-policy/storage.googleapis.com/Bucket#policy" }'; } )
+
+# 4) Per-project service APIs for types CAI does not expose. Projects in scope
+#    come from the scope itself (-p) or from CAI (-f / -o).
+case "$SCOPE" in
+  projects/*) PROJECTS="${SCOPE#projects/}" ;;
+  *) PROJECTS=$(gcloud asset search-all-resources --scope="$SCOPE" \
+                  --asset-types="cloudresourcemanager.googleapis.com/Project" \
+                  --format="value(project)" 2>/dev/null | sed 's#^projects/##' | sort -u) ;;
+esac
+API_DENIED=()
+api_lines() {   # api_lines <project>: one "api:<tf type>" / CAI key line per resource
+  local p="$1" out inst
+  # Bucket ACL entries (buckets with uniform bucket-level access have none).
+  if out=$(gcloud storage buckets list --project="$p" --format="value(acl[].entity)" 2>"$ERR_LOG"); then
+    echo "$out" | tr ';' '\n' | awk 'NF { print "api:google_storage_bucket_access_control" }'
+  else API_DENIED+=("$p: storage buckets list"); fi
+  if out=$(gcloud storage hmac list --project="$p" --format="value(accessId)" 2>"$ERR_LOG"); then
+    echo "$out" | awk 'NF { print "api:google_storage_hmac_key" }'
+  else grep -qi 'disabled\|not been used' "$ERR_LOG" || API_DENIED+=("$p: storage hmac list"); fi
+  if inst=$(gcloud sql instances list --project="$p" --format="value(name)" 2>"$ERR_LOG"); then
+    for i in $inst; do
+      gcloud sql databases list --project="$p" --instance="$i" --format="value(name)" 2>/dev/null \
+        | awk 'NF { print "api:google_sql_database" }'
+    done
+  else grep -qi 'disabled\|not been used' "$ERR_LOG" || API_DENIED+=("$p: sql instances list"); fi
+  # Workload identity pools are only returned by 'asset list'; read them from
+  # the IAM API when that call was not permitted.
+  if [[ -z "$LISTED" ]]; then
+    if out=$(gcloud iam workload-identity-pools list --location=global --project="$p" --format="value(name)" 2>"$ERR_LOG"); then
+      echo "$out" | awk 'NF { print "iam.googleapis.com/WorkloadIdentityPool" }'
+    else grep -qi 'disabled\|not been used' "$ERR_LOG" || API_DENIED+=("$p: workload identity pools list"); fi
+  fi
+}
+API_KEYS=""
+for p in $PROJECTS; do
+  API_KEYS="$API_KEYS
+$(api_lines "$p")"
+done
 
 # Bash 3.2 (macOS default) has no associative arrays, so COUNTS/UNMAPPED are
 # each stored as two parallel indexed arrays, same approach as MAP above.
@@ -406,7 +472,7 @@ count_get() { # count_get <key> - prints its count, or 0
 }
 
 # Each source is tallied on its own, then merged with max() per key.
-for src in "$SEARCH_KEYS" "$LIST_KEYS" "$IAM_KEYS"; do
+for src in "$SEARCH_KEYS" "$LIST_KEYS" "$IAM_KEYS" "$API_KEYS"; do
   while read -r c t; do
     [[ -z "${t:-}" ]] && continue
     count_max "$t" "$c"
@@ -479,20 +545,24 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   printf '  - %s\n' "${SKIPPED[@]}"
 fi
 
-N_COUNTABLE=$(printf '%s\n' "${MAP_VALS[@]}" | sort -u | wc -l | tr -d ' ')
+if [[ ${#API_DENIED[@]} -gt 0 ]]; then
+  echo ""
+  echo "WARNING: these per-project API reads failed (their types may be undercounted):"
+  printf '  - %s\n' "${API_DENIED[@]}"
+fi
+
+N_COUNTABLE=$(printf '%s\n' "${MAP_VALS[@]}" "${API_COUNTED[@]}" | sort -u | wc -l | tr -d ' ')
 N_SHARED=${#COUNTED_AS_OTHER[@]}
 N_NOT=${#NOT_COUNTABLE[@]}
 
 echo ""
 echo "COVERAGE: this script counts $N_COUNTABLE of $(( N_COUNTABLE + N_SHARED + N_NOT )) Firefly-supported GCP types"
-echo "      directly; $N_SHARED more (managed SSL certificates, bucket IAM bindings/"
-echo "      policies) are included under the SSL certificate / bucket IAM member"
-echo "      rows. The other $N_NOT (Apigee sub-entities, Cloud Scheduler jobs, SQL"
-echo "      databases, bucket ACLs, HMAC keys) are not exposed by Cloud Asset"
-echo "      Inventory. Treat the total as a LOWER BOUND of Firefly-supported assets."
+echo "      directly; $N_SHARED more (Google-managed SSL certificates) are included"
+echo "      under the SSL certificate row. The other $N_NOT (Apigee sub-entities, Cloud"
+echo "      Scheduler jobs) are not counted, so the total is a lower bound if you use them."
 if [[ $VERBOSE -eq 1 ]]; then
   echo ""
-  echo "Supported types not countable via Cloud Asset Inventory:"
+  echo "Supported types not counted:"
   printf '  %s\n' "${NOT_COUNTABLE[@]}"
 else
   echo "      Run with -v to list them."
