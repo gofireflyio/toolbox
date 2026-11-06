@@ -6,6 +6,9 @@ Every supported Terraform type in supported-types/<provider>.txt must appear
 in exactly one of three arrays in scripts/firefly_<provider>_asset_count.sh:
 
   MAP_VALS          counted (paired with a cloud-native type in MAP_KEYS)
+  API_COUNTED       counted by a direct read-only API call in the script
+                    (a type may be in both this and MAP_VALS: the API count
+                    is used, the inventory-service count is the fallback)
   COUNTED_AS_OTHER  counted under another type's native type (AWS, GCP)
   NOT_COUNTABLE     the cloud's inventory service does not expose it
 
@@ -220,7 +223,7 @@ def analyse(key, cache_dir, fix):
         removed += [vals[i] for i in sorted(drop_map)]
         text = remove_entries(text, "MAP_KEYS", drop_map)
         text = remove_entries(text, "MAP_VALS", drop_map)
-        for name in ("COUNTED_AS_OTHER", "NOT_COUNTABLE"):
+        for name in ("API_COUNTED", "COUNTED_AS_OTHER", "NOT_COUNTABLE"):
             entries = array_entries(text, name)
             drop = {i for i, v in enumerate(entries) if v not in supported}
             removed += [entries[i] for i in sorted(drop)]
@@ -230,7 +233,7 @@ def analyse(key, cache_dir, fix):
                 f.write(text)
         keys, vals = array_entries(text, "MAP_KEYS"), array_entries(text, "MAP_VALS")
 
-    mapped = set(vals)
+    mapped = set(vals) | set(array_entries(text, "API_COUNTED"))
     other = set(array_entries(text, "COUNTED_AS_OTHER"))
     notc = set(array_entries(text, "NOT_COUNTABLE"))
     official = official_types(key, cache_dir)

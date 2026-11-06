@@ -30,40 +30,56 @@ provider-asset-support/
 ## The asset-count scripts
 
 Each script is **read-only** — it only calls list/describe/query APIs — and prints a
-per-type breakdown, a grand total, and a CSV. The total is a **lower bound**: it counts
-only resource types the cloud's native inventory service exposes, so data-plane objects
-and some child/config sub-resources Firefly also codifies are not counted.
+per-type breakdown, a grand total, and a CSV. Each one aims to match what Firefly will
+show in its inventory for the same scope, including child/config resources Firefly
+tracks as their own assets (security group rules, S3 bucket settings, IAM bindings,
+storage containers, ...) and cloud-created defaults Firefly also inventories (default
+VPCs and NACLs, default event buses, managed parameter groups, `master` SQL databases).
 
 The scripts run entirely on your machine with your own cloud CLI credentials. They
 make no changes and send nothing to Firefly; you choose what output, if any, to share.
+
+The AWS script calls each service's own Describe/List API in every enabled region
+(about 300 types; global services such as IAM, S3, Route 53 and CloudFront once),
+several regions in parallel (`-j`). Where a call is denied, it falls back to AWS Config
+for regions where a recorder is on, and lists the denied services at the end. `-C`
+uses AWS Config only and `-a` an org-wide Config aggregator; both are lower bounds,
+since Config records only some types and only in regions with a recorder.
 
 The Azure script also queries the `AuthorizationResources`, `PolicyResources`,
 `RecoveryServicesResources` and `DnsResources` tables (role assignments, policy
 assignments/exemptions/definitions, Azure Backup items, private DNS records), counts
 child config embedded in parent resources (subnets, NSG rules, LB rules/probes/pools,
 VNet peerings, Key Vault access policies, ...), and splits Linux/Windows VMs and
-VMSS, web/function/Logic App Standard apps and AI Foundry hubs/projects.
+VMSS, web/function/Logic App Standard apps and AI Foundry hubs/projects. Child
+resources Resource Graph does not return (storage containers/shares/queues/tables,
+Cosmos DB databases/containers, Service Bus and Event Hubs entities, Key Vault secrets,
+SQL auditing policies, Front Door origins/routes/rules, diagnostic settings, PIM
+eligible assignments) are read with ARM GETs through the ARM batch API; `-q` skips them.
 
 The GCP script also lists asset types the search API does not return (`gcloud asset
-list`), counts project and bucket IAM members and Cloud Function IAM policies
-(`gcloud asset search-all-iam-policies`, covered by `roles/cloudasset.viewer`), and
-splits regional vs global/zonal compute resources by location.
+list`), counts project and bucket IAM members, bucket IAM bindings and policies, and
+Cloud Function IAM policies (`gcloud asset search-all-iam-policies`, covered by
+`roles/cloudasset.viewer`), and splits regional vs global/zonal compute resources by
+location. Per project it also reads bucket ACL entries, HMAC keys, Cloud SQL databases
+and (when `asset list` is not permitted) workload identity pools from their own APIs.
 
-Every script prints how many of the supported types it can count. Types the inventory
-service records under another type's row are in `COUNTED_AS_OTHER` (AWS, GCP), and
-types it does not expose at all are in `NOT_COUNTABLE`; `-v` lists the latter. Every
-supported type is in the script's `MAP`, `COUNTED_AS_OTHER` or `NOT_COUNTABLE`.
+Every script prints how many of the supported types it can count. Types counted from
+the inventory service are in the script's `MAP`, types counted by a direct API call in
+`API_COUNTED` (a type can be in both: the API count wins and the inventory service is
+the fallback), types recorded under another type's row in `COUNTED_AS_OTHER`, and the
+few it cannot count in `NOT_COUNTABLE` (`-v` lists them). Every supported type is in at
+least one of these.
 
 | Cloud | Data source | Prereqs | Scope |
 |-------|-------------|---------|-------|
-| AWS   | AWS Config advanced queries | `aws` v2, `jq`; Config recorder enabled; `config:SelectResourceConfig` | per-region or org-wide Config aggregator |
-| Azure | Azure Resource Graph        | `az` (logged in), `jq`; `Reader` role | subscriptions or a management group |
-| GCP   | Cloud Asset Inventory       | `gcloud`; `cloudasset.googleapis.com` enabled; `roles/cloudasset.viewer` | project / folder / organization |
+| AWS   | Service Describe/List APIs, AWS Config as fallback | `aws` v2, `jq`; `ReadOnlyAccess` managed policy | one account, all or chosen regions (or `-a` Config aggregator) |
+| Azure | Azure Resource Graph + ARM GETs (batched) | `az` (logged in), `jq`, `curl`; `Reader` role | subscriptions or a management group |
+| GCP   | Cloud Asset Inventory + per-project APIs  | `gcloud`; `cloudasset.googleapis.com` enabled; `roles/cloudasset.viewer` + `roles/viewer` | project / folder / organization |
 
 ```bash
-# AWS  – all enabled regions in the current account (or -a for an org aggregator)
+# AWS  – all enabled regions in the current account (-p PROFILE, -r "REGIONS", -j PARALLEL)
 ./scripts/firefly_aws_asset_count.sh
-./scripts/firefly_aws_asset_count.sh -a MY_CONFIG_AGGREGATOR
 
 # Azure – all accessible subscriptions (or -s SUB_ID, or -m MGMT_GROUP)
 ./scripts/firefly_azure_asset_count.sh
